@@ -34,3 +34,6 @@ __MACOSX/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Built docs site
+site/

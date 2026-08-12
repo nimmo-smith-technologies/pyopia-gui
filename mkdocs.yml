@@ -1,0 +1,9 @@
+site_name: pyopia-gui
+site_url: https://nimmo-smith-technologies.github.io/pyopia-gui/
+repo_url: https://github.com/nimmo-smith-technologies/pyopia-gui
+theme:
+  name: material
+
+nav:
+  - Home: index.md
+  - Design decisions: decisions/INDEX.md

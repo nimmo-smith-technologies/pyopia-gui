@@ -1,0 +1,24 @@
+name: Version check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check that __version__ was bumped
+        run: |
+          changed=$(git diff origin/main -- src/pyopia_gui/__init__.py | grep -c '__version__' || true)
+          if [ "$changed" -lt 2 ]; then
+            echo "src/pyopia_gui/__init__.py's __version__ wasn't bumped in this PR."
+            exit 1
+          fi
