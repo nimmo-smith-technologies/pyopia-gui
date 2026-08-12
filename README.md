@@ -20,7 +20,15 @@ the processing engine, developed and maintained at
 
 ## Getting started
 
-[ Setup and usage instructions to follow as the design stabilises. ]
+Requires [uv](https://docs.astral.sh/uv/).
+
+```bash
+uv sync --all-groups   # install dependencies
+uv run pyopia-gui      # run the app
+uv run pytest          # run the tests
+uv run ruff check .    # lint
+uv run mkdocs serve    # preview the docs locally
+```
 
 ## License
 
