@@ -1,6 +1,9 @@
 name: Build and test
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
   test:
@@ -16,7 +19,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.0.0
 
       - name: Install pyopia-gui
         run: uv sync --group dev
