@@ -52,7 +52,8 @@ about.
 2. **Fork, branch, and work in small, clear commits.** Sign each one off
    (`-s`).
 3. **Open a pull request** describing what you changed and why. Link the
-   issue if there is one.
+   issue if there is one. Pull requests are reviewed and merged by the
+   maintainer before landing on `main`.
 4. **New files need an SPDX header** identifying their licence:
 
    ```
