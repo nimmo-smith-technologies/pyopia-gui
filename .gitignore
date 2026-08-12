@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv.lock is intentionally NOT ignored here - unlike a library (e.g. PyOPIA
+# itself), this is an application, so the lockfile is committed for
+# reproducible installs/deploys.
+
+# Environment / secrets
+.env
+.env.*
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# OS cruft
+.DS_Store
+__MACOSX/
+
+# Test/coverage
+.pytest_cache/
+.coverage
+htmlcov/
