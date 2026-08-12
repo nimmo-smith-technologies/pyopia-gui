@@ -18,6 +18,9 @@ venv/
 .env
 .env.*
 
+# Local session notes/briefing - not for the public repo
+CLAUDE.md
+
 # Editor/IDE
 .vscode/
 .idea/
