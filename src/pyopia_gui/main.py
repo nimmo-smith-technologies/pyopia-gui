@@ -10,7 +10,7 @@ def index() -> None:
 
 
 def run() -> None:
-    ui.run(title="pyopia-gui")
+    ui.run(title="pyopia-gui", reload=False)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
