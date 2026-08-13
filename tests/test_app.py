@@ -55,7 +55,7 @@ async def test_shows_editable_project_folder_input(user: User, monkeypatch: pyte
 
     await user.should_see("Project folder")
     folder_input = user.find(ui.input).elements.pop()
-    assert folder_input.value.endswith("pyopia-gui-projects/demo")
+    assert Path(folder_input.value) == Path.home() / "pyopia-gui-projects" / "demo"
 
 
 async def test_shows_browse_button(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
