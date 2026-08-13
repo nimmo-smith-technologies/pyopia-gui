@@ -67,7 +67,13 @@ if you're prompted separately, or Docker Desktop says WSL isn't installed:
    ```
 2. **Restart your computer** - this step matters, Docker Desktop won't detect WSL2
    until you do.
-3. Relaunch Docker Desktop.
+3. After restarting, WSL finishes installing its default Ubuntu environment and asks
+   you to create a Unix username and password. This is local to that WSL environment
+   on your own machine only - it's not a Microsoft account, isn't sent anywhere, and
+   isn't used for anything outside WSL itself, so ordinary/simple is fine. You don't
+   need to remember or use it for pyopia-gui either - Docker Desktop only needs the
+   WSL2 platform to exist, not that particular login.
+4. Relaunch Docker Desktop.
 
 If `wsl --install` itself fails:
 
