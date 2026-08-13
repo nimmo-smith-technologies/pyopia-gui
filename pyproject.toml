@@ -18,6 +18,7 @@ Repository = "https://github.com/nimmo-smith-technologies/pyopia-gui"
 
 [project.scripts]
 pyopia-gui = "pyopia_gui.main:run"
+pyopia-gui-native = "pyopia_gui.native_app:run"
 
 [dependency-groups]
 dev = [
@@ -28,6 +29,15 @@ dev = [
 docs = [
     "mkdocs>=1.6.0",
     "mkdocs-material>=9.5.0",
+]
+native = [
+    "nicegui[native]>=2.0.0",
+    "pyinstaller>=6.10.0",
+    # Linux has no built-in webview backend (unlike macOS/Windows) - pywebview needs
+    # either GTK (a system package, not pip-installable) or Qt (pip-installable) added
+    # explicitly there. Verified working: GTK failed with a missing system "gi" module;
+    # Qt6 worked with no system packages needed.
+    "pywebview[qt6]>=5.0; sys_platform == 'linux'",
 ]
 
 [build-system]

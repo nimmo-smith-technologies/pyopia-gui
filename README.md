@@ -32,11 +32,14 @@ uv run mkdocs serve    # preview the docs locally
 ```
 
 > **Note:** `ghcr.io/sintef/pyopia` isn't currently publicly pullable ([upstream
-> issue](https://github.com/SINTEF/pyopia/issues/424)). Until that's fixed, build
-> it locally from PyOPIA's own source and point pyopia-gui at it:
+> issue](https://github.com/SINTEF/pyopia/issues/424)). Until that's fixed,
+> pyopia-gui defaults to a mirror we publish ourselves at
+> `ghcr.io/nimmo-smith-technologies/pyopia` (see
+> [ADR 0006](docs/decisions/0006-2026-08-13-mirror-pyopia-image.md)) - no extra
+> steps needed. If you'd rather use the official image once it's public again, or
+> build your own from source, override it:
 > ```bash
-> docker build -t pyopia:local --build-arg UID=$(id -u) --build-arg GID=$(id -g) /path/to/pyopia
-> PYOPIA_GUI_DOCKER_IMAGE=pyopia:local uv run pyopia-gui
+> PYOPIA_GUI_DOCKER_IMAGE=ghcr.io/sintef/pyopia:latest uv run pyopia-gui
 > ```
 
 Once it's running, open the URL it prints in your browser. The "Project folder"

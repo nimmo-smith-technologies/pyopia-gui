@@ -1,0 +1,49 @@
+name: Build native app
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact-name: pyopia-gui-linux
+            dist-path: dist/pyopia-gui
+          - os: macos-latest
+            artifact-name: pyopia-gui-macos
+            dist-path: dist/pyopia-gui.app
+          - os: windows-latest
+            artifact-name: pyopia-gui-windows
+            dist-path: dist/pyopia-gui.exe
+
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.0
+
+      - name: Install dependencies
+        run: uv sync --group native
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          uv run nicegui-pack --name pyopia-gui --onefile --windowed
+          --osx-bundle-identifier com.nimmosmithtechnologies.pyopia-gui
+          src/pyopia_gui/native_app.py
+
+      - name: Build (Linux/Windows)
+        if: runner.os != 'macOS'
+        run: uv run nicegui-pack --name pyopia-gui --onefile --windowed src/pyopia_gui/native_app.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.dist-path }}

@@ -10,7 +10,11 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 
-PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/sintef/pyopia:latest")
+# ghcr.io/sintef/pyopia isn't currently publicly pullable
+# (https://github.com/SINTEF/pyopia/issues/424), so this defaults to a mirror we
+# publish ourselves (see .github/workflows/publish-pyopia-mirror.yml and
+# docs/decisions/0006-2026-08-13-mirror-pyopia-image.md) until that's fixed upstream.
+PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/nimmo-smith-technologies/pyopia:latest")
 
 
 class DockerStatus(Enum):

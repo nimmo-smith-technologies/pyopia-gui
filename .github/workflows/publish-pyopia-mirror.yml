@@ -1,0 +1,49 @@
+name: Publish PyOPIA image mirror
+
+# Temporary stopgap: ghcr.io/sintef/pyopia is not currently publicly pullable
+# (https://github.com/SINTEF/pyopia/issues/424). This builds PyOPIA's own,
+# unmodified Dockerfile from their public source and publishes it under our
+# own namespace, so pyopia-gui has a working default image while that's
+# unresolved upstream. See docs/decisions/ for the full reasoning - drop this
+# workflow and revert docker_client.py's default once the upstream image is
+# public again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pyopia_ref:
+        description: "PyOPIA git ref to build (tag, branch, or commit)"
+        required: true
+        default: "v2.0.3"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out PyOPIA source
+        uses: actions/checkout@v7
+        with:
+          repository: SINTEF/pyopia
+          ref: ${{ inputs.pyopia_ref }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/nimmo-smith-technologies/pyopia:${{ inputs.pyopia_ref }}
+            ghcr.io/nimmo-smith-technologies/pyopia:latest

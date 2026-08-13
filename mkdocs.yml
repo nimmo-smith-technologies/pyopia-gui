@@ -4,6 +4,10 @@ repo_url: https://github.com/nimmo-smith-technologies/pyopia-gui
 theme:
   name: material
 
+markdown_extensions:
+  - admonition
+
 nav:
   - Home: index.md
+  - Using pyopia-gui: usage.md
   - Design decisions: decisions/INDEX.md
