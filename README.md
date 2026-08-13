@@ -20,7 +20,8 @@ the processing engine, developed and maintained at
 
 ## Getting started
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and [Docker](https://docs.docker.com/get-docker/)
+(pyopia-gui orchestrates PyOPIA's own Docker image to run processing).
 
 ```bash
 uv sync --all-groups   # install dependencies
@@ -29,6 +30,14 @@ uv run pytest          # run the tests
 uv run ruff check .    # lint
 uv run mkdocs serve    # preview the docs locally
 ```
+
+> **Note:** `ghcr.io/sintef/pyopia` isn't currently publicly pullable ([upstream
+> issue](https://github.com/SINTEF/pyopia/issues/424)). Until that's fixed, build
+> it locally from PyOPIA's own source and point pyopia-gui at it:
+> ```bash
+> docker build -t pyopia:local --build-arg UID=$(id -u) --build-arg GID=$(id -g) /path/to/pyopia
+> PYOPIA_GUI_DOCKER_IMAGE=pyopia:local uv run pyopia-gui
+> ```
 
 ## License
 

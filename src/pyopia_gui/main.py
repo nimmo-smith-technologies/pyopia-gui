@@ -15,11 +15,11 @@ EXAMPLE_PROJECT_NAME = "demo"
 def index() -> None:
     ui.label("pyopia-gui").classes("text-2xl")
 
-    if not docker_client.is_docker_available():
-        ui.label(
-            "Docker was not found, or isn't running. Install Docker Desktop, "
-            "make sure it's running, then reload this page."
-        ).classes("text-red")
+    docker_status = docker_client.check_docker()
+    if docker_status != docker_client.DockerStatus.AVAILABLE:
+        ui.label("Docker isn't ready yet").classes("text-lg text-red")
+        ui.markdown(docker_client.setup_guidance(docker_status))
+        ui.button("Recheck", on_click=lambda: ui.navigate.reload())
         return
 
     parent_dir = DEFAULT_PROJECTS_DIR

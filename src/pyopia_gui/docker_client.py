@@ -3,25 +3,98 @@
 
 import asyncio
 import os
+import platform
 import subprocess
 from collections.abc import Callable
+from enum import Enum
 from pathlib import Path
 
 PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/sintef/pyopia:latest")
 
 
-def is_docker_available() -> bool:
-    """Whether the `docker` CLI is installed and its daemon is reachable."""
+class DockerStatus(Enum):
+    NOT_INSTALLED = "not_installed"
+    NOT_RUNNING = "not_running"
+    AVAILABLE = "available"
+
+
+def check_docker() -> DockerStatus:
+    """Check whether the `docker` CLI is installed and its daemon is reachable."""
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True,
             timeout=5,
-            check=True,
         )
-        return True
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return False
+    except FileNotFoundError:
+        return DockerStatus.NOT_INSTALLED
+    except subprocess.TimeoutExpired:
+        return DockerStatus.NOT_RUNNING
+    return DockerStatus.AVAILABLE if result.returncode == 0 else DockerStatus.NOT_RUNNING
+
+
+_LINUX_INSTALL_STEPS = """\
+Docker isn't installed. Open a terminal and run:
+
+```
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+```
+
+Then log out and back in (so the permission change takes effect), and click **Recheck**.\
+"""
+
+_MACOS_INSTALL_STEPS = """\
+Docker isn't installed. Download and install
+[Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/), open it once,
+then click **Recheck**.\
+"""
+
+_WINDOWS_INSTALL_STEPS = """\
+Docker isn't installed. Download and install
+[Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) - it will
+guide you through enabling WSL2 if needed - then click **Recheck**.\
+"""
+
+_FALLBACK_INSTALL_STEPS = """\
+Docker isn't installed. See [docs.docker.com/get-docker](https://docs.docker.com/get-docker/)
+for your platform, then click **Recheck**.\
+"""
+
+_LINUX_NOT_RUNNING_STEPS = """\
+Docker is installed but isn't reachable. If you just installed it, log out and back in so
+your user's `docker` group membership takes effect. Otherwise, start it with:
+
+```
+sudo systemctl start docker
+```
+
+Then click **Recheck**.\
+"""
+
+_DESKTOP_NOT_RUNNING_STEPS = """\
+Docker is installed but isn't running. Open Docker Desktop and wait for it to finish
+starting, then click **Recheck**.\
+"""
+
+
+def setup_guidance(status: DockerStatus) -> str:
+    """Plain-language, platform-specific markdown guidance for a non-AVAILABLE Docker status."""
+    os_name = platform.system()  # 'Linux', 'Darwin', 'Windows'
+
+    if status == DockerStatus.NOT_INSTALLED:
+        if os_name == "Linux":
+            return _LINUX_INSTALL_STEPS
+        if os_name == "Darwin":
+            return _MACOS_INSTALL_STEPS
+        if os_name == "Windows":
+            return _WINDOWS_INSTALL_STEPS
+        return _FALLBACK_INSTALL_STEPS
+
+    if status == DockerStatus.NOT_RUNNING:
+        return _LINUX_NOT_RUNNING_STEPS if os_name == "Linux" else _DESKTOP_NOT_RUNNING_STEPS
+
+    return ""
 
 
 def _volume_args(directory: Path) -> list[str]:

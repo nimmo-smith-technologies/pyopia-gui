@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -58,22 +59,54 @@ def test_stats_filename_matches_init_project_output_convention() -> None:
     assert docker_client.stats_filename("demo") == "processed/demo-STATS.nc"
 
 
-def test_is_docker_available_false_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_docker_not_installed_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(*args: object, **kwargs: object) -> None:
         raise FileNotFoundError("no docker")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert docker_client.is_docker_available() is False
+    assert docker_client.check_docker() is docker_client.DockerStatus.NOT_INSTALLED
 
 
-def test_is_docker_available_true_when_docker_responds(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_check_docker_not_running_when_daemon_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(args, returncode=1)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.check_docker() is docker_client.DockerStatus.NOT_RUNNING
+
+
+def test_check_docker_not_running_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(*args: object, **kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=5)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.check_docker() is docker_client.DockerStatus.NOT_RUNNING
+
+
+def test_check_docker_available_when_docker_responds(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args, returncode=0)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert docker_client.is_docker_available() is True
+    assert docker_client.check_docker() is docker_client.DockerStatus.AVAILABLE
+
+
+def test_setup_guidance_is_empty_for_available_status() -> None:
+    assert docker_client.setup_guidance(docker_client.DockerStatus.AVAILABLE) == ""
+
+
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin", "Windows", "SomeOtherOS"])
+@pytest.mark.parametrize("status", [docker_client.DockerStatus.NOT_INSTALLED, docker_client.DockerStatus.NOT_RUNNING])
+def test_setup_guidance_is_non_empty_for_every_status_and_platform(
+    monkeypatch: pytest.MonkeyPatch, os_name: str, status: docker_client.DockerStatus
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: os_name)
+
+    assert docker_client.setup_guidance(status)
 
 
 async def test_run_streamed_yields_lines_and_returns_exit_code() -> None:

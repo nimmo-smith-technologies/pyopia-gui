@@ -12,16 +12,25 @@ async def test_index_page_loads(user: User) -> None:
     await user.should_see("pyopia-gui")
 
 
-async def test_shows_docker_warning_when_docker_unavailable(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(docker_client, "is_docker_available", lambda: False)
+async def test_shows_docker_warning_when_docker_not_installed(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.NOT_INSTALLED)
 
     await user.open("/")
 
-    await user.should_see("Docker was not found")
+    await user.should_see("Docker isn't ready yet")
+    await user.should_see("Recheck")
+
+
+async def test_shows_docker_warning_when_docker_not_running(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.NOT_RUNNING)
+
+    await user.open("/")
+
+    await user.should_see("Docker isn't ready yet")
 
 
 async def test_shows_create_project_button_when_docker_available(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(docker_client, "is_docker_available", lambda: True)
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
 
     await user.open("/")
 
