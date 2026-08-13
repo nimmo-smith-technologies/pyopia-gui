@@ -24,6 +24,20 @@ class DockerStatus(Enum):
     AVAILABLE = "available"
 
 
+def _no_console_kwargs() -> dict:
+    """Extra subprocess kwargs that stop a console window flashing on Windows.
+
+    The packaged app (native_app.py) is windowed - it has no console of its own -
+    so by default Windows allocates a brand new console window for every console
+    subprocess (docker.exe) it spawns, flashing on screen for each invocation.
+    CREATE_NO_WINDOW is Windows-only (doesn't exist in the subprocess module on
+    other platforms), so this is only returned there.
+    """
+    if platform.system() == "Windows":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def check_docker() -> DockerStatus:
     """Check whether the `docker` CLI is installed and its daemon is reachable."""
     try:
@@ -34,6 +48,7 @@ def check_docker() -> DockerStatus:
             # under a 5s timeout on a Windows machine with flaky WSL2 networking,
             # while Docker Desktop itself said "Engine running" the whole time.
             timeout=15,
+            **_no_console_kwargs(),
         )
     except FileNotFoundError:
         return DockerStatus.NOT_INSTALLED
@@ -321,6 +336,7 @@ async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> in
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        **_no_console_kwargs(),
     )
     assert process.stdout is not None
     while True:

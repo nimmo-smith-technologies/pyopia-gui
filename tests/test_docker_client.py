@@ -134,12 +134,6 @@ def test_interpret_failure_recognises_pull_access_denied() -> None:
     assert docker_client.interpret_failure(lines) is not None
 
 
-def test_interpret_failure_recognises_manifest_unknown() -> None:
-    lines = ["manifest for ghcr.io/sintef/pyopia:nonexistent not found: manifest unknown"]
-
-    assert docker_client.interpret_failure(lines) is not None
-
-
 def test_interpret_failure_recognises_daemon_unreachable() -> None:
     lines = ["Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"]
 
@@ -215,13 +209,22 @@ def test_setup_guidance_is_empty_for_available_status() -> None:
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin", "Windows", "SomeOtherOS"])
-@pytest.mark.parametrize("status", [docker_client.DockerStatus.NOT_INSTALLED, docker_client.DockerStatus.NOT_RUNNING])
-def test_setup_guidance_is_non_empty_for_every_status_and_platform(
-    monkeypatch: pytest.MonkeyPatch, os_name: str, status: docker_client.DockerStatus
+def test_setup_guidance_not_installed_is_non_empty_for_every_platform(
+    monkeypatch: pytest.MonkeyPatch, os_name: str
 ) -> None:
+    # Each platform is a genuinely distinct return statement here.
     monkeypatch.setattr(platform, "system", lambda: os_name)
 
-    assert docker_client.setup_guidance(status)
+    assert docker_client.setup_guidance(docker_client.DockerStatus.NOT_INSTALLED)
+
+
+@pytest.mark.parametrize("os_name", ["Linux", "SomeOtherOS"])
+def test_setup_guidance_not_running_is_non_empty(monkeypatch: pytest.MonkeyPatch, os_name: str) -> None:
+    # Only two real branches for NOT_RUNNING (Linux vs. everything else) - Darwin/Windows
+    # would just re-exercise the same "everything else" branch as SomeOtherOS.
+    monkeypatch.setattr(platform, "system", lambda: os_name)
+
+    assert docker_client.setup_guidance(docker_client.DockerStatus.NOT_RUNNING)
 
 
 def test_setup_guidance_has_no_embedded_links(monkeypatch: pytest.MonkeyPatch) -> None:

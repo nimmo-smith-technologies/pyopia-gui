@@ -61,20 +61,17 @@ async def test_no_download_button_when_docker_not_installed_on_linux(
     await user.should_not_see("Open Docker download page")
 
 
-async def test_shows_create_project_button_when_docker_available(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_main_screen_shows_expected_elements_when_docker_available(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
 
     await user.open("/")
 
     await user.should_see("1. Create example project")
-
-
-async def test_shows_ready_status_when_docker_available(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
-
-    await user.open("/")
-
+    await user.should_see("2. Run processing")
     await user.should_see("Ready")
+    await user.should_see("Browse")
 
 
 async def test_shows_editable_project_folder_input(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,14 +82,6 @@ async def test_shows_editable_project_folder_input(user: User, monkeypatch: pyte
     await user.should_see("Project folder")
     folder_input = user.find(ui.input).elements.pop()
     assert Path(folder_input.value) == Path.home() / "pyopia-gui-projects" / "demo"
-
-
-async def test_shows_browse_button(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
-
-    await user.open("/")
-
-    await user.should_see("Browse")
 
 
 async def test_create_warns_if_folder_already_exists(
