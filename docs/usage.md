@@ -94,6 +94,21 @@ If `wsl --install` itself fails:
   the actual underlying error - "Catastrophic failure" is just Windows' generic
   wrapper message and doesn't say what really went wrong.
 
+### Linux: "permission denied" talking to Docker
+
+If `docker --version` prints a version but pyopia-gui still says Docker isn't
+ready, or a terminal shows something like "permission denied while trying to
+connect to the Docker API", your user account isn't in the `docker` group yet
+- by default only `root` can talk to the Docker daemon:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Then either **reboot**, or run `newgrp docker` in your current terminal - a
+plain log out/log back in doesn't reliably pick up the new group membership on
+every desktop environment.
+
 ## The main screen
 
 Once Docker's ready, you'll see:

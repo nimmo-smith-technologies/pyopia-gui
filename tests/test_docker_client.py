@@ -140,6 +140,28 @@ def test_interpret_failure_recognises_daemon_unreachable() -> None:
     assert docker_client.interpret_failure(lines) is not None
 
 
+def test_interpret_failure_does_not_blame_a_successful_pull_for_a_later_stall() -> None:
+    # Real case: Docker always prints "Unable to find image ... locally" on any
+    # first-time run, pull or no pull failure - it's not itself a failure signal.
+    # A run that pulled fine and then stalled during the *next* step (e.g. PyOPIA's
+    # own silent, unprogressed example-data download) must be reported as a stall,
+    # not misdiagnosed as a failed image pull.
+    lines = [
+        "Unable to find image 'ghcr.io/nimmo-smith-technologies/pyopia:latest' locally",
+        "latest: Pulling from nimmo-smith-technologies/pyopia",
+        "Pull complete",
+        "Status: Downloaded newer image for ghcr.io/nimmo-smith-technologies/pyopia:latest",
+        "No output received for 600s - this usually means a network operation "
+        "(like pulling the Docker image) has stalled. Stopping.",
+    ]
+
+    message = docker_client.interpret_failure(lines)
+
+    assert message is not None
+    assert "stalled" in message
+    assert "Couldn't pull" not in message
+
+
 def test_interpret_failure_recognises_stall() -> None:
     lines = [
         "No output received for 180s - this usually means a network operation "

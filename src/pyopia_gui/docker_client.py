@@ -65,7 +65,8 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
 ```
 
-Then log out and back in (so the permission change takes effect), and click **Recheck**.\
+Then run `newgrp docker` (or reboot - a plain log out/in doesn't always pick up the new
+group membership), and click **Recheck**.\
 """
 
 _MACOS_INSTALL_STEPS = """\
@@ -88,8 +89,15 @@ DOCKER_DESKTOP_URL = "https://www.docker.com/products/docker-desktop/"
 DOCKER_GET_STARTED_URL = "https://docs.docker.com/get-docker/"
 
 _LINUX_NOT_RUNNING_STEPS = """\
-Docker is installed but isn't reachable. If you just installed it, log out and back in so
-your user's `docker` group membership takes effect. Otherwise, start it with:
+Docker is installed but isn't reachable. If you just installed it, your user's `docker`
+group membership may not have taken effect yet - a plain log out/in doesn't always do it,
+so run this in a terminal instead:
+
+```
+newgrp docker
+```
+
+(or just reboot). Otherwise, start Docker with:
 
 ```
 sudo systemctl start docker
@@ -270,7 +278,6 @@ _IMAGE_PULL_FAILURE_MARKERS = (
     "error from registry: denied",
     "manifest unknown",
     "requested access to the resource is denied",
-    "unable to find image",
 )
 
 _DAEMON_UNREACHABLE_MARKERS = ("cannot connect to the docker daemon",)
@@ -294,9 +301,9 @@ def interpret_failure(output_lines: list[str]) -> str | None:
         return "Lost contact with Docker partway through - check it's still running, then try again."
     if any(marker in combined for marker in _STALL_MARKERS):
         return (
-            "This stalled with no progress for a while - usually a network problem (a stuck image "
-            "download is the most common cause, especially over VPN or on Windows/WSL2). Check your "
-            "connection, then try again."
+            "This stalled with no progress for a while - usually a network problem (a stuck "
+            "download, either of the Docker image or of the example data, is the most common "
+            "cause, especially over VPN or on Windows/WSL2). Check your connection, then try again."
         )
     return None
 
@@ -318,7 +325,10 @@ def extract_pyopia_version(output_lines: list[str]) -> str | None:
     return None
 
 
-INACTIVITY_TIMEOUT_SECONDS = 180
+# PyOPIA's own "download example data" step (urllib.request.urlretrieve, a ~44MB zip)
+# prints no progress at all while it runs - confirmed a real, successful run got killed
+# by a too-short timeout here, well before it could finish on an ordinary connection.
+INACTIVITY_TIMEOUT_SECONDS = 600
 
 
 async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
@@ -347,7 +357,7 @@ async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> in
             await process.wait()
             on_line(
                 f"No output received for {INACTIVITY_TIMEOUT_SECONDS}s - this usually means a network "
-                "operation (like pulling the Docker image) has stalled. Stopping."
+                "operation (like pulling the Docker image or downloading example data) has stalled. Stopping."
             )
             return -1
         if not raw_line:
