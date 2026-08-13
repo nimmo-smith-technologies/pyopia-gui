@@ -61,6 +61,10 @@ non-expert audience this project is meant to serve.
 - Users now depend on our build of PyOPIA rather than SINTEF's own - a boundary worth
   being clear about if anyone asks why the image comes from `nimmo-smith-technologies`
   rather than `sintef`.
+- No PyOPIA release currently includes the `Dockerfile` - it postdates `v2.0.3`,
+  their latest tagged release - so the mirror is built from their `main` branch
+  rather than a pinned release, which is less reproducible than pinning to a tag.
+  Worth re-pinning to a real release once PyOPIA cuts one that includes it.
 
 ---
 

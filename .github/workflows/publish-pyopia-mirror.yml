@@ -12,9 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       pyopia_ref:
-        description: "PyOPIA git ref to build (tag, branch, or commit)"
+        description: >-
+          PyOPIA git ref to build (tag, branch, or commit). No tagged release
+          currently includes the Dockerfile (it postdates v2.0.3, PyOPIA's latest
+          release) - "main" is the only ref that has it right now.
         required: true
-        default: "v2.0.3"
+        default: "main"
 
 permissions:
   contents: read
