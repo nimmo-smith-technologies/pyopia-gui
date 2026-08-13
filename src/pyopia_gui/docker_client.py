@@ -126,5 +126,5 @@ async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> in
     )
     assert process.stdout is not None
     async for raw_line in process.stdout:
-        on_line(raw_line.decode(errors="replace").rstrip("\n"))
+        on_line(raw_line.decode(errors="replace").rstrip("\r\n"))
     return await process.wait()
