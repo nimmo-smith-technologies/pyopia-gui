@@ -30,7 +30,10 @@ def check_docker() -> DockerStatus:
         result = subprocess.run(
             ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True,
-            timeout=5,
+            # Generous on purpose: seen a real case of this reporting NOT_RUNNING
+            # under a 5s timeout on a Windows machine with flaky WSL2 networking,
+            # while Docker Desktop itself said "Engine running" the whole time.
+            timeout=15,
         )
     except FileNotFoundError:
         return DockerStatus.NOT_INSTALLED
@@ -256,6 +259,7 @@ _IMAGE_PULL_FAILURE_MARKERS = (
 )
 
 _DAEMON_UNREACHABLE_MARKERS = ("cannot connect to the docker daemon",)
+_STALL_MARKERS = ("no output received for",)
 
 
 def interpret_failure(output_lines: list[str]) -> str | None:
@@ -273,6 +277,12 @@ def interpret_failure(output_lines: list[str]) -> str | None:
         )
     if any(marker in combined for marker in _DAEMON_UNREACHABLE_MARKERS):
         return "Lost contact with Docker partway through - check it's still running, then try again."
+    if any(marker in combined for marker in _STALL_MARKERS):
+        return (
+            "This stalled with no progress for a while - usually a network problem (a stuck image "
+            "download is the most common cause, especially over VPN or on Windows/WSL2). Check your "
+            "connection, then try again."
+        )
     return None
 
 
@@ -293,10 +303,19 @@ def extract_pyopia_version(output_lines: list[str]) -> str | None:
     return None
 
 
+INACTIVITY_TIMEOUT_SECONDS = 180
+
+
 async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
     """Run `command`, calling `on_line` for each combined stdout/stderr line as it arrives.
 
-    Returns the process's exit code.
+    Returns the process's exit code. If no output arrives for
+    `INACTIVITY_TIMEOUT_SECONDS`, the process is killed and this returns -1 instead
+    of hanging forever - real case seen: a stalled Docker image pull (stuck on
+    "pulling fs layer" with a flaky WSL2 network) otherwise left the app waiting
+    indefinitely with no feedback and no way to recover short of restarting it.
+    A real, working run - even a slow one - keeps producing output well within
+    this window; a multi-minute total silence means something has actually stuck.
     """
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -304,6 +323,18 @@ async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> in
         stderr=asyncio.subprocess.STDOUT,
     )
     assert process.stdout is not None
-    async for raw_line in process.stdout:
+    while True:
+        try:
+            raw_line = await asyncio.wait_for(process.stdout.readline(), timeout=INACTIVITY_TIMEOUT_SECONDS)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
+            on_line(
+                f"No output received for {INACTIVITY_TIMEOUT_SECONDS}s - this usually means a network "
+                "operation (like pulling the Docker image) has stalled. Stopping."
+            )
+            return -1
+        if not raw_line:
+            break
         on_line(raw_line.decode(errors="replace").rstrip("\r\n"))
     return await process.wait()

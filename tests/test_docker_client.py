@@ -146,6 +146,15 @@ def test_interpret_failure_recognises_daemon_unreachable() -> None:
     assert docker_client.interpret_failure(lines) is not None
 
 
+def test_interpret_failure_recognises_stall() -> None:
+    lines = [
+        "No output received for 180s - this usually means a network operation "
+        "(like pulling the Docker image) has stalled. Stopping."
+    ]
+
+    assert docker_client.interpret_failure(lines) is not None
+
+
 def test_interpret_failure_returns_none_for_unrecognised_output() -> None:
     lines = ["PYOPIA VERSION 2.16.23", "LOAD CONFIG", "some unrelated error nobody has seen before"]
 
@@ -273,3 +282,16 @@ async def test_run_streamed_returns_nonzero_exit_code_on_failure() -> None:
     exit_code = await docker_client.run_streamed(command, lambda _line: None)
 
     assert exit_code == 3
+
+
+async def test_run_streamed_times_out_on_prolonged_inactivity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(docker_client, "INACTIVITY_TIMEOUT_SECONDS", 0.2)
+    lines: list[str] = []
+    # Sleeps well past the (patched, tiny) inactivity timeout without printing anything -
+    # simulates a genuinely stalled operation (e.g. a stuck image pull).
+    command = [sys.executable, "-c", "import time; time.sleep(5)"]
+
+    exit_code = await docker_client.run_streamed(command, lines.append)
+
+    assert exit_code == -1
+    assert any("No output received for" in line for line in lines)
