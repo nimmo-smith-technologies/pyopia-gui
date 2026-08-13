@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
@@ -106,6 +107,70 @@ async def test_create_warns_if_folder_already_exists(
     user.find(kind=ui.button, content="1. Create example project").click()
 
     await user.should_see("already exists")
+
+
+async def test_create_shows_confirmation_dialog_with_resolved_path(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    target = tmp_path / "new-project"
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(target)
+
+    user.find(kind=ui.button, content="1. Create example project").click()
+
+    await user.should_see("Create a new PyOPIA project here?")
+    await user.should_see(str(target.resolve()))
+
+
+async def test_create_cancelled_does_not_run_docker(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    target = tmp_path / "new-project"
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(target)
+
+    user.find(kind=ui.button, content="1. Create example project").click()
+    await user.should_see("Create a new PyOPIA project here?")
+
+    user.find(kind=ui.button, content="Cancel").click()
+    await asyncio.sleep(0.2)  # let on_create()'s coroutine resume past `await dialog` and return
+
+    assert calls == []
+    assert not target.exists()
+
+
+async def test_create_confirmed_runs_docker(user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    target = tmp_path / "new-project"
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(target)
+
+    user.find(kind=ui.button, content="1. Create example project").click()
+    await user.should_see("Create a new PyOPIA project here?")
+
+    user.find(kind=ui.button, content="Create here").click()
+
+    await user.should_see("Example project created")
 
 
 async def test_run_shows_friendly_message_in_log_on_image_pull_failure(

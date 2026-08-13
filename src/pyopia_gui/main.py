@@ -12,6 +12,29 @@ DEFAULT_PROJECT_DIR = Path.home() / "pyopia-gui-projects" / "demo"
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
 
 
+async def _confirm_create(project_dir: Path) -> bool:
+    """Ask the user to confirm the exact resolved path before creating anything there.
+
+    The Docker mount already limits what a run can touch on the host to this one
+    folder - the real risk isn't the container reaching further than that, it's a
+    person landing somewhere unintended via the folder browser (one click too many
+    on "up") and not realising before something gets created there. Showing the
+    full resolved path and requiring an explicit click catches that without
+    blocking any particular location - including legitimate ones like an external
+    drive's own root.
+    """
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Create a new PyOPIA project here?").classes("text-lg font-medium")
+        ui.label(str(project_dir)).classes("font-mono text-sm bg-gray-100 p-2 rounded break-all")
+        ui.label("This creates a new folder at the exact path above and downloads example data into it.").classes(
+            "text-sm text-gray-500"
+        )
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+            ui.button("Create here", on_click=lambda: dialog.submit(True))
+    return bool(await dialog)
+
+
 def _open_folder_browser(folder_input: ui.input) -> None:
     """Open a dialog for browsing the server's filesystem and picking a folder."""
     start_dir = Path(folder_input.value.strip()).expanduser()
@@ -153,13 +176,16 @@ def index() -> None:
         ui.notify(message, type="negative")
 
     async def on_create() -> None:
-        project_dir = Path(folder_input.value.strip()).expanduser()
+        project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         if project_dir.exists():
             ui.notify(
                 f"{project_dir} already exists - pick a new folder, or click "
                 "'Run processing' if it's already a PyOPIA project.",
                 type="negative",
             )
+            return
+
+        if not await _confirm_create(project_dir):
             return
 
         create_button.disable()
