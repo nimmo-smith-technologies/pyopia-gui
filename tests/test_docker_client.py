@@ -103,6 +103,44 @@ def test_validate_project_valid_config(tmp_path: Path) -> None:
     assert docker_client.validate_project(tmp_path) is None
 
 
+def test_interpret_failure_recognises_real_denied_pull_output() -> None:
+    # Actual output captured from `docker run` against the currently-private ghcr.io/sintef/pyopia.
+    lines = [
+        "Unable to find image 'ghcr.io/sintef/pyopia:latest' locally",
+        "docker: Error response from daemon: error from registry: denied",
+        "denied",
+    ]
+
+    message = docker_client.interpret_failure(lines)
+
+    assert message is not None
+    assert docker_client.PYOPIA_IMAGE in message
+
+
+def test_interpret_failure_recognises_pull_access_denied() -> None:
+    lines = ["docker: pull access denied for pyopia, repository does not exist or may require 'docker login'"]
+
+    assert docker_client.interpret_failure(lines) is not None
+
+
+def test_interpret_failure_recognises_manifest_unknown() -> None:
+    lines = ["manifest for ghcr.io/sintef/pyopia:nonexistent not found: manifest unknown"]
+
+    assert docker_client.interpret_failure(lines) is not None
+
+
+def test_interpret_failure_recognises_daemon_unreachable() -> None:
+    lines = ["Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"]
+
+    assert docker_client.interpret_failure(lines) is not None
+
+
+def test_interpret_failure_returns_none_for_unrecognised_output() -> None:
+    lines = ["PYOPIA VERSION 2.16.23", "LOAD CONFIG", "some unrelated error nobody has seen before"]
+
+    assert docker_client.interpret_failure(lines) is None
+
+
 def test_check_docker_not_installed_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(*args: object, **kwargs: object) -> None:
         raise FileNotFoundError("no docker")

@@ -95,7 +95,20 @@ def index() -> None:
         status_label = ui.label("Ready").classes("text-md font-medium")
         status_label.tooltip("The current step in the create/process workflow below")
 
-    log = ui.log(max_lines=500).classes("w-full h-64 bg-black text-white")
+    ui.add_css("""
+        .pyopia-log .q-scrollarea__bar {
+            opacity: 1;
+            background: #e0e0e0;
+            border-radius: 4px;
+        }
+        .pyopia-log .q-scrollarea__bar--horizontal {
+            height: 10px;
+        }
+        .pyopia-log .q-scrollarea__bar--vertical {
+            width: 10px;
+        }
+    """)
+    log = ui.log(max_lines=500).classes("pyopia-log w-full h-64 bg-black text-white")
     log.tooltip("Raw output from PyOPIA - useful for troubleshooting if something goes wrong")
     montage = ui.image().classes("w-full max-w-2xl")
     montage.tooltip("A montage of example particles found while processing")
@@ -112,9 +125,22 @@ def index() -> None:
         status_label.set_text(text)
         spinner.visible = busy
 
-    async def run_streamed_to_log(command: list[str]) -> int:
+    async def run_streamed_to_log(command: list[str]) -> tuple[int, list[str]]:
         log.push("$ " + " ".join(command))
-        return await docker_client.run_streamed(command, log.push)
+        lines: list[str] = []
+
+        def on_line(line: str) -> None:
+            lines.append(line)
+            log.push(line)
+
+        exit_code = await docker_client.run_streamed(command, on_line)
+        return exit_code, lines
+
+    def report_failure(lines: list[str], fallback: str) -> None:
+        message = docker_client.interpret_failure(lines) or f"{fallback} - see log below"
+        log.push(f"→ {message}", classes="text-yellow-300 font-bold")
+        set_status(message, busy=False)
+        ui.notify(message, type="negative")
 
     async def on_create() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser()
@@ -131,13 +157,12 @@ def index() -> None:
         parent_dir = project_dir.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
         command = docker_client.init_project_command(parent_dir, project_dir.name)
-        exit_code = await run_streamed_to_log(command)
+        exit_code, lines = await run_streamed_to_log(command)
         if exit_code == 0:
             set_status("Example project created", busy=False)
             ui.notify("Example project created", type="positive")
         else:
-            set_status("Failed to create example project - see log below", busy=False)
-            ui.notify("Failed to create example project - see log", type="negative")
+            report_failure(lines, "Failed to create example project")
         create_button.enable()
 
     async def on_run() -> None:
@@ -149,32 +174,29 @@ def index() -> None:
 
         run_button.disable()
         set_status("Running processing (this can take a few minutes)…", busy=True)
-        exit_code = await run_streamed_to_log(docker_client.process_command(project_dir))
+        exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir))
         if exit_code != 0:
-            set_status("Processing failed - see log below", busy=False)
-            ui.notify("Processing failed - see log", type="negative")
+            report_failure(lines, "Processing failed")
             run_button.enable()
             return
         ui.notify("Processing complete", type="positive")
 
         set_status("Merging results…", busy=True)
-        merge_exit_code = await run_streamed_to_log(docker_client.merge_mfdata_command(project_dir))
+        merge_exit_code, merge_lines = await run_streamed_to_log(docker_client.merge_mfdata_command(project_dir))
         if merge_exit_code != 0:
-            set_status("Merging processed stats failed - see log below", busy=False)
-            ui.notify("Merging processed stats failed - see log", type="negative")
+            report_failure(merge_lines, "Merging processed stats failed")
             run_button.enable()
             return
 
         set_status("Building montage…", busy=True)
         montage_command = docker_client.make_montage_command(project_dir, docker_client.stats_filename(project_dir))
-        montage_exit_code = await run_streamed_to_log(montage_command)
+        montage_exit_code, montage_lines = await run_streamed_to_log(montage_command)
         if montage_exit_code == 0:
             montage.set_source(str(project_dir / "montage.png"))
             montage.visible = True
             set_status("Done - see your results below", busy=False)
         else:
-            set_status("Montage creation failed - see log below", busy=False)
-            ui.notify("Montage creation failed - see log", type="negative")
+            report_failure(montage_lines, "Montage creation failed")
         run_button.enable()
 
     create_button.on_click(on_create)

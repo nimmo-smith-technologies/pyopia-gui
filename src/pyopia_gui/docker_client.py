@@ -215,6 +215,35 @@ def validate_project(project_dir: Path, config_filename: str = "config.toml") ->
     return None
 
 
+_IMAGE_PULL_FAILURE_MARKERS = (
+    "pull access denied",
+    "error from registry: denied",
+    "manifest unknown",
+    "requested access to the resource is denied",
+    "unable to find image",
+)
+
+_DAEMON_UNREACHABLE_MARKERS = ("cannot connect to the docker daemon",)
+
+
+def interpret_failure(output_lines: list[str]) -> str | None:
+    """Give a plain-language explanation for a recognised Docker failure in `output_lines`.
+
+    Returns None if nothing recognisable was found, so the caller can fall back to a
+    generic "see the log" message.
+    """
+    combined = "\n".join(output_lines).lower()
+    if any(marker in combined for marker in _IMAGE_PULL_FAILURE_MARKERS):
+        return (
+            f"Couldn't pull the PyOPIA image ({PYOPIA_IMAGE}) - it may be private, "
+            "renamed, or removed, or you may not have network access. See the README "
+            "for how to build it locally instead."
+        )
+    if any(marker in combined for marker in _DAEMON_UNREACHABLE_MARKERS):
+        return "Lost contact with Docker partway through - check it's still running, then try again."
+    return None
+
+
 async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
     """Run `command`, calling `on_line` for each combined stdout/stderr line as it arrives.
 
