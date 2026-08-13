@@ -5,6 +5,7 @@ import asyncio
 import os
 import platform
 import subprocess
+import tomllib
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -146,12 +147,15 @@ def process_command(project_dir: Path, config_filename: str = "config.toml") -> 
     ]
 
 
-def merge_mfdata_command(project_dir: Path, path_to_data: str = "processed") -> list[str]:
-    """Build the command to merge per-image STATS.nc files under `path_to_data` into one.
+def merge_mfdata_command(project_dir: Path, config_filename: str = "config.toml") -> list[str]:
+    """Build the command to merge per-image STATS.nc files into the single combined file.
 
     `process` writes one -STATS.nc file per input image; make-montage needs the single
-    combined file this produces.
+    combined file this produces. The folder to merge is the directory part of the
+    project's own `steps.output.output_datafile`, so this works for any project's config,
+    not just ones created via `init-project`.
     """
+    path_to_data = os.path.dirname(_output_datafile(project_dir, config_filename)) or "."
     return [
         "docker",
         "run",
@@ -178,13 +182,37 @@ def make_montage_command(project_dir: Path, stats_filename: str) -> list[str]:
     ]
 
 
-def stats_filename(project_name: str) -> str:
-    """The STATS.nc path an example project's generated config writes to, relative to the project dir.
+def _load_config(project_dir: Path, config_filename: str) -> dict:
+    with (project_dir / config_filename).open("rb") as f:
+        return tomllib.load(f)
 
-    Matches the `output_datafile = processed/<project_name>` convention PyOPIA's own
-    `init-project`-generated config uses (see pyopia.instrument.silcam.generate_config).
+
+def _output_datafile(project_dir: Path, config_filename: str) -> str:
+    """The `steps.output.output_datafile` prefix from the project's config, e.g. "processed/demo"."""
+    return _load_config(project_dir, config_filename)["steps"]["output"]["output_datafile"]
+
+
+def stats_filename(project_dir: Path, config_filename: str = "config.toml") -> str:
+    """The path to the merged STATS.nc file `merge-mfdata` will produce, relative to the project dir."""
+    return f"{_output_datafile(project_dir, config_filename)}-STATS.nc"
+
+
+def validate_project(project_dir: Path, config_filename: str = "config.toml") -> str | None:
+    """Check that `project_dir` looks like a usable PyOPIA project.
+
+    Returns a plain-language error message, or None if the project looks OK.
     """
-    return f"processed/{project_name}-STATS.nc"
+    if not (project_dir / config_filename).is_file():
+        return f"No {config_filename} found in {project_dir}"
+    try:
+        config = _load_config(project_dir, config_filename)
+    except tomllib.TOMLDecodeError as e:
+        return f"{config_filename} isn't valid TOML: {e}"
+    try:
+        config["steps"]["output"]["output_datafile"]
+    except (KeyError, TypeError):
+        return f"{config_filename} is missing steps.output.output_datafile"
+    return None
 
 
 async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:

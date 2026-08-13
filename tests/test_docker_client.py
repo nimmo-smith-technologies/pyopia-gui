@@ -43,10 +43,24 @@ def test_process_command_matches_host_user_on_posix(tmp_path: Path, monkeypatch:
     assert "--user" in command
 
 
-def test_merge_mfdata_command_passes_processed_folder(tmp_path: Path) -> None:
+def _write_config(project_dir: Path, output_datafile: str = "processed/demo") -> None:
+    (project_dir / "config.toml").write_text(f'[steps.output]\noutput_datafile = "{output_datafile}"\n')
+
+
+def test_merge_mfdata_command_uses_output_datafile_directory(tmp_path: Path) -> None:
+    _write_config(tmp_path, output_datafile="processed/demo")
+
     command = docker_client.merge_mfdata_command(tmp_path)
 
     assert command[-2:] == ["merge-mfdata", "processed"]
+
+
+def test_merge_mfdata_command_handles_output_datafile_with_no_subfolder(tmp_path: Path) -> None:
+    _write_config(tmp_path, output_datafile="demo")
+
+    command = docker_client.merge_mfdata_command(tmp_path)
+
+    assert command[-2:] == ["merge-mfdata", "."]
 
 
 def test_make_montage_command_passes_stats_file(tmp_path: Path) -> None:
@@ -55,8 +69,38 @@ def test_make_montage_command_passes_stats_file(tmp_path: Path) -> None:
     assert command[-2:] == ["make-montage", "processed/demo-STATS.nc"]
 
 
-def test_stats_filename_matches_init_project_output_convention() -> None:
-    assert docker_client.stats_filename("demo") == "processed/demo-STATS.nc"
+def test_stats_filename_reads_output_datafile_from_config(tmp_path: Path) -> None:
+    _write_config(tmp_path, output_datafile="processed/demo")
+
+    assert docker_client.stats_filename(tmp_path) == "processed/demo-STATS.nc"
+
+
+def test_validate_project_missing_config(tmp_path: Path) -> None:
+    assert docker_client.validate_project(tmp_path) == f"No config.toml found in {tmp_path}"
+
+
+def test_validate_project_invalid_toml(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text("this is not valid toml [[[")
+
+    error = docker_client.validate_project(tmp_path)
+
+    assert error is not None
+    assert "isn't valid TOML" in error
+
+
+def test_validate_project_missing_output_datafile_key(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text("[general]\nraw_files = 'images/*.silc'\n")
+
+    error = docker_client.validate_project(tmp_path)
+
+    assert error is not None
+    assert "output_datafile" in error
+
+
+def test_validate_project_valid_config(tmp_path: Path) -> None:
+    _write_config(tmp_path)
+
+    assert docker_client.validate_project(tmp_path) is None
 
 
 def test_check_docker_not_installed_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:

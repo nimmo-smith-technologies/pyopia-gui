@@ -39,6 +39,12 @@ uv run mkdocs serve    # preview the docs locally
 > PYOPIA_GUI_DOCKER_IMAGE=pyopia:local uv run pyopia-gui
 > ```
 
+Once it's running, open the URL it prints in your browser. The "Project folder"
+field controls both what "Create example project" creates and what "Run
+processing" processes - it starts out pointing at a canned example project you
+can create with one click, but you can browse to (or type) any folder with its
+own PyOPIA `config.toml` at any time.
+
 ## License
 
 `pyopia-gui` is released under the **GNU Affero General Public License v3.0**
