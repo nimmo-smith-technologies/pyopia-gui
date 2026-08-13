@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import webbrowser
 from pathlib import Path
 
 from nicegui import ui
@@ -77,6 +78,10 @@ def index() -> None:
     if docker_status != docker_client.DockerStatus.AVAILABLE:
         ui.label("Docker isn't ready yet").classes("text-lg text-red")
         ui.markdown(docker_client.setup_guidance(docker_status))
+        download_url = docker_client.setup_guidance_url(docker_status)
+        if download_url:
+            download_button = ui.button("Open Docker download page", on_click=lambda: webbrowser.open(download_url))
+            download_button.tooltip("Opens in your default browser, not this window")
         recheck_button = ui.button("Recheck", on_click=lambda: ui.navigate.reload())
         recheck_button.tooltip("Re-checks whether Docker is installed and running")
         return

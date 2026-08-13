@@ -204,6 +204,48 @@ def test_setup_guidance_is_non_empty_for_every_status_and_platform(
     assert docker_client.setup_guidance(status)
 
 
+def test_setup_guidance_has_no_embedded_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A markdown link inside the native app's window would navigate the app's own
+    # embedded webview away from itself, with no way back - any URL must come from
+    # setup_guidance_url() instead, wired to open the OS's real browser.
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    assert "](http" not in docker_client.setup_guidance(docker_client.DockerStatus.NOT_INSTALLED)
+
+
+def test_setup_guidance_url_is_none_when_available() -> None:
+    assert docker_client.setup_guidance_url(docker_client.DockerStatus.AVAILABLE) is None
+
+
+def test_setup_guidance_url_is_none_when_not_running() -> None:
+    assert docker_client.setup_guidance_url(docker_client.DockerStatus.NOT_RUNNING) is None
+
+
+def test_setup_guidance_url_is_none_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Linux install is a terminal command, not a webpage to link to.
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+
+    assert docker_client.setup_guidance_url(docker_client.DockerStatus.NOT_INSTALLED) is None
+
+
+@pytest.mark.parametrize("os_name", ["Darwin", "Windows"])
+def test_setup_guidance_url_points_at_docker_desktop(monkeypatch: pytest.MonkeyPatch, os_name: str) -> None:
+    monkeypatch.setattr(platform, "system", lambda: os_name)
+
+    assert (
+        docker_client.setup_guidance_url(docker_client.DockerStatus.NOT_INSTALLED) == docker_client.DOCKER_DESKTOP_URL
+    )
+
+
+def test_setup_guidance_url_falls_back_for_unknown_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "SomeOtherOS")
+
+    assert (
+        docker_client.setup_guidance_url(docker_client.DockerStatus.NOT_INSTALLED)
+        == docker_client.DOCKER_GET_STARTED_URL
+    )
+
+
 async def test_run_streamed_yields_lines_and_returns_exit_code() -> None:
     lines: list[str] = []
     command = [sys.executable, "-c", "print('first'); print('second')"]

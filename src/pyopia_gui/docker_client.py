@@ -51,21 +51,23 @@ Then log out and back in (so the permission change takes effect), and click **Re
 """
 
 _MACOS_INSTALL_STEPS = """\
-Docker isn't installed. Download and install
-[Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/), open it once,
-then click **Recheck**.\
+Docker isn't installed. Download and install Docker Desktop for Mac using the button
+below, open it once, then click **Recheck**.\
 """
 
 _WINDOWS_INSTALL_STEPS = """\
-Docker isn't installed. Download and install
-[Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/) - it will
-guide you through enabling WSL2 if needed - then click **Recheck**.\
+Docker isn't installed. Download and install Docker Desktop for Windows using the
+button below - it will guide you through enabling WSL2 if needed - then click
+**Recheck**.\
 """
 
 _FALLBACK_INSTALL_STEPS = """\
-Docker isn't installed. See [docs.docker.com/get-docker](https://docs.docker.com/get-docker/)
-for your platform, then click **Recheck**.\
+Docker isn't installed. Use the button below for install instructions for your
+platform, then click **Recheck**.\
 """
+
+DOCKER_DESKTOP_URL = "https://www.docker.com/products/docker-desktop/"
+DOCKER_GET_STARTED_URL = "https://docs.docker.com/get-docker/"
 
 _LINUX_NOT_RUNNING_STEPS = """\
 Docker is installed but isn't reachable. If you just installed it, log out and back in so
@@ -101,6 +103,24 @@ def setup_guidance(status: DockerStatus) -> str:
         return _LINUX_NOT_RUNNING_STEPS if os_name == "Linux" else _DESKTOP_NOT_RUNNING_STEPS
 
     return ""
+
+
+def setup_guidance_url(status: DockerStatus) -> str | None:
+    """The install/download URL relevant to `status`, or None if there isn't one.
+
+    Kept separate from `setup_guidance()`'s text rather than embedded as a markdown
+    link: in the native (packaged) app, clicking a link navigates the app's own
+    embedded window away to that page, with no back button to return from. The
+    caller should instead wire this to opening the OS's actual default browser.
+    """
+    if status != DockerStatus.NOT_INSTALLED:
+        return None
+    os_name = platform.system()
+    if os_name == "Linux":
+        return None  # install is a terminal command here, not a webpage
+    if os_name in ("Darwin", "Windows"):
+        return DOCKER_DESKTOP_URL
+    return DOCKER_GET_STARTED_URL
 
 
 def _volume_args(directory: Path) -> list[str]:

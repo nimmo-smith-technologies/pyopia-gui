@@ -38,6 +38,28 @@ async def test_shows_docker_warning_when_docker_not_running(user: User, monkeypa
     await user.should_see("Docker isn't ready yet")
 
 
+async def test_shows_download_button_when_docker_not_installed_on_windows(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.NOT_INSTALLED)
+    monkeypatch.setattr(docker_client.platform, "system", lambda: "Windows")
+
+    await user.open("/")
+
+    await user.should_see("Open Docker download page")
+
+
+async def test_no_download_button_when_docker_not_installed_on_linux(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.NOT_INSTALLED)
+    monkeypatch.setattr(docker_client.platform, "system", lambda: "Linux")
+
+    await user.open("/")
+
+    await user.should_not_see("Open Docker download page")
+
+
 async def test_shows_create_project_button_when_docker_available(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
 
