@@ -13,10 +13,10 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact-name: pyopia-gui-linux
-            dist-path: dist/pyopia-gui
+            dist-path: dist/pyopia-gui-linux.zip
           - os: macos-latest
             artifact-name: pyopia-gui-macos
-            dist-path: dist/pyopia-gui.app
+            dist-path: dist/pyopia-gui-macos.zip
           - os: windows-latest
             artifact-name: pyopia-gui-windows
             dist-path: dist/pyopia-gui.exe
@@ -38,9 +38,21 @@ jobs:
           --osx-bundle-identifier com.nimmosmithtechnologies.pyopia-gui
           src/pyopia_gui/native_app.py
 
+      - name: Zip the .app bundle (macOS)
+        if: runner.os == 'macOS'
+        # actions/upload-artifact uploads a directory's *contents*, not the directory
+        # itself - zipping first keeps the pyopia-gui.app wrapper intact so Finder
+        # recognises it as an app after unzipping.
+        run: cd dist && zip -r -X pyopia-gui-macos.zip pyopia-gui.app
+
       - name: Build (Linux/Windows)
         if: runner.os != 'macOS'
         run: uv run nicegui-pack --name pyopia-gui --onefile --windowed src/pyopia_gui/native_app.py
+
+      - name: Zip the binary with execute permission set (Linux)
+        if: runner.os == 'Linux'
+        # zip doesn't preserve the execute bit unless it's already set going in.
+        run: cd dist && chmod +x pyopia-gui && zip -X pyopia-gui-linux.zip pyopia-gui
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
