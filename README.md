@@ -59,16 +59,14 @@ uv sync --group native
 uv run nicegui-pack --name pyopia-gui --onefile --windowed src/pyopia_gui/native_app.py
 ```
 
-The built app appears under `dist/`. `.github/workflows/build-native.yml`
-builds it for Linux, macOS, and Windows in CI and publishes it to the
-[Releases page](https://github.com/nimmo-smith-technologies/pyopia-gui/releases)
-on a tagged version - still experimental/alpha, not yet the recommended way to
-run pyopia-gui day to day.
-
-On Linux, the native window needs a working Qt platform plugin; if it fails to
-open at all with a `qt.qpa.plugin: Could not load the Qt platform plugin "xcb"`
-error, install `libxcb-cursor0` (e.g. `sudo apt install libxcb-cursor0` on
-Debian/Ubuntu-based distros - confirmed missing by default on Linux Mint).
+The built app appears under `dist/`. `.github/workflows/build-native.yml` builds it
+for Linux, macOS (Apple Silicon only), and Windows in CI and publishes it to the
+[Releases page](https://github.com/nimmo-smith-technologies/pyopia-gui/releases) on a
+tagged version. For downloading and running a pre-built copy, including per-platform
+setup notes, see the
+[usage guide](docs/usage.md#option-a-download-the-app-recommended) instead of building
+your own - still experimental/alpha, not yet the recommended way to run pyopia-gui day
+to day.
 
 ## License
 

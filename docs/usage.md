@@ -7,14 +7,11 @@ without needing to work with config files or a command line.
 
 ## Before you start
 
-You'll need two things installed on your computer:
-
-- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** - used to install
-  and run pyopia-gui itself.
-- **[Docker](https://docs.docker.com/get-started/get-docker/)** - pyopia-gui uses
-  PyOPIA's own Docker image to do the actual image processing, so it needs Docker
-  installed and running. If it isn't, pyopia-gui tells you exactly what to do the
-  first time you open it - see [Docker isn't ready yet](#docker-isnt-ready-yet) below.
+Whichever way you get pyopia-gui running (see below), you'll need
+**[Docker](https://docs.docker.com/get-started/get-docker/)** installed and running -
+pyopia-gui uses PyOPIA's own Docker image to do the actual image processing. If it
+isn't installed or running, pyopia-gui tells you exactly what to do the first time you
+open it - see [Docker isn't ready yet](#docker-isnt-ready-yet) below.
 
 !!! note "About the PyOPIA image"
     PyOPIA's own official Docker image is currently private
@@ -25,12 +22,39 @@ You'll need two things installed on your computer:
     rather point it at the official image once that's public again, or one you've
     built yourself.
 
-## Starting pyopia-gui
+## Getting pyopia-gui
 
-From a terminal, in the pyopia-gui project folder:
+### Option A: Download the app (recommended)
+
+No Python or terminal needed for this option. Go to the
+[Releases page](https://github.com/nimmo-smith-technologies/pyopia-gui/releases),
+open the **Assets** section for the release at the top (click it to expand the list
+of downloads - it's collapsed by default), and download the file for your operating
+system:
+
+- **Windows**: download `pyopia-gui.exe` and double-click it.
+- **Mac**: download `pyopia-gui-macos.zip`, unzip it, and double-click
+  `pyopia-gui.app`. **Apple Silicon only for now** - on an Intel Mac, use
+  [Option B](#option-b-run-from-source) instead.
+- **Linux**: download `pyopia-gui-linux.zip`, unzip it, and run `./pyopia-gui`. If it
+  fails to open with a `qt.qpa.plugin: Could not load the Qt platform plugin "xcb"`
+  error, install `libxcb-cursor0` (e.g. `sudo apt install libxcb-cursor0` on
+  Debian/Ubuntu-based distros).
+
+!!! note "This is still an early alpha"
+    The downloadable app is new and less tested than running from source - if you hit
+    something unexpected, [Option B](#option-b-run-from-source) is the more
+    battle-tested path, and we'd appreciate a
+    [bug report](https://github.com/nimmo-smith-technologies/pyopia-gui/issues) either
+    way.
+
+### Option B: Run from source
+
+Needs [uv](https://docs.astral.sh/uv/getting-started/installation/) (a Python package
+manager) installed first. Then, from a terminal, in the pyopia-gui project folder:
 
 ```bash
-uv sync
+uv sync --group dev --group docs
 uv run pyopia-gui
 ```
 
@@ -93,6 +117,24 @@ If `wsl --install` itself fails:
   Application, or Applications and Services Logs → Microsoft → Windows → Lxss) for
   the actual underlying error - "Catastrophic failure" is just Windows' generic
   wrapper message and doesn't say what really went wrong.
+
+### Mac: "docker: command not found" or a credentials error
+
+If Docker Desktop shows as running but pyopia-gui still says Docker isn't
+installed, or you see `docker: command not found` in a terminal, or later an
+error like `error getting credentials - err: exec: "docker-credential-desktop"
+executable file not found in $PATH`, Docker Desktop's command-line tools never
+got linked onto your PATH - normally a one-time step during its first launch
+that needs your Mac password, which is easy to miss or dismiss. Add its bundled
+tools to your PATH directly:
+
+```bash
+echo 'export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Then open a new terminal (or `source ~/.zshrc` in your current one) and try
+again.
 
 ### Linux: "permission denied" talking to Docker
 
