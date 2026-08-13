@@ -17,7 +17,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Older than ubuntu-latest deliberately: a PyInstaller build links against
+          # the build machine's glibc, and glibc is backward- but not
+          # forward-compatible - a binary built on a newer glibc than the user's
+          # system refuses to run. ubuntu-22.04 (glibc 2.35) is the oldest Ubuntu
+          # GitHub still hosts (20.04 has been retired); confirmed this reproduces
+          # and fixes a real "GLIBC_2.38 not found" failure on Debian 12/LMDE 6
+          # (glibc 2.36) using the previous ubuntu-latest (24.04, glibc 2.39) build.
+          - os: ubuntu-22.04
             artifact-name: pyopia-gui-linux
             dist-path: dist/pyopia-gui-linux.zip
           - os: macos-latest
