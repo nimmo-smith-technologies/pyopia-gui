@@ -123,14 +123,21 @@ def setup_guidance_url(status: DockerStatus) -> str | None:
     return DOCKER_GET_STARTED_URL
 
 
-def _volume_args(directory: Path) -> list[str]:
-    """Mount `directory` into the container at the same path, and set it as the working dir.
+_CONTAINER_WORKDIR = "/workspace"
 
-    Keeping host and container paths identical is what lets a config.toml with paths
-    under `directory` resolve unchanged inside the container.
+
+def _volume_args(directory: Path) -> list[str]:
+    """Mount `directory` into the container at a fixed path, and set it as the working dir.
+
+    The container side is always /workspace, regardless of host OS - not the host's
+    own path. Containers are Linux regardless of host OS, so a Windows host path
+    (e.g. C:\\Users\\...) isn't a valid path *inside* the container at all. A fixed
+    path works identically on every host and keeps relative paths in config.toml
+    (e.g. "images/*.silc") resolving correctly, since PyOPIA resolves them against
+    its own working directory.
     """
     resolved = str(directory.resolve())
-    return ["-v", f"{resolved}:{resolved}", "-w", resolved]
+    return ["-v", f"{resolved}:{_CONTAINER_WORKDIR}", "-w", _CONTAINER_WORKDIR]
 
 
 def _user_args() -> list[str]:

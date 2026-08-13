@@ -15,15 +15,26 @@ def test_init_project_command_mounts_parent_dir_and_passes_example_flag(tmp_path
     command = docker_client.init_project_command(tmp_path, "demo")
 
     assert command[:3] == ["docker", "run", "--rm"]
-    assert f"{tmp_path}:{tmp_path}" in command
+    assert f"{tmp_path}:/workspace" in command
+    assert "-w" in command
+    assert command[command.index("-w") + 1] == "/workspace"
     assert command[-3:] == ["init-project", "demo", "--example-data"]
 
 
 def test_process_command_mounts_project_dir_and_passes_config(tmp_path: Path) -> None:
     command = docker_client.process_command(tmp_path, "config.toml")
 
-    assert f"{tmp_path}:{tmp_path}" in command
+    assert f"{tmp_path}:/workspace" in command
     assert command[-2:] == ["process", "config.toml"]
+
+
+def test_volume_args_use_a_fixed_container_path_not_the_host_path(tmp_path: Path) -> None:
+    # A Windows host path (C:\Users\...) isn't valid *inside* a Linux container at
+    # all - the container side must be a fixed, always-valid Linux path.
+    command = docker_client.process_command(tmp_path)
+
+    assert f"{tmp_path}:{tmp_path}" not in command
+    assert f"{tmp_path}:/workspace" in command
 
 
 def test_process_command_omits_user_flag_on_windows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
