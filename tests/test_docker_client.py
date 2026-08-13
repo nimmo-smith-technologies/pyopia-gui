@@ -141,6 +141,19 @@ def test_interpret_failure_returns_none_for_unrecognised_output() -> None:
     assert docker_client.interpret_failure(lines) is None
 
 
+def test_extract_pyopia_version_reads_real_process_output() -> None:
+    # Actual first lines of `docker run ... process config.toml` output, captured earlier.
+    lines = ["PYOPIA VERSION 2.16.23", "LOAD CONFIG", "OBTAIN IMAGE LIST"]
+
+    assert docker_client.extract_pyopia_version(lines) == "2.16.23"
+
+
+def test_extract_pyopia_version_returns_none_when_absent() -> None:
+    lines = ["LOAD CONFIG", "OBTAIN IMAGE LIST"]
+
+    assert docker_client.extract_pyopia_version(lines) is None
+
+
 def test_check_docker_not_installed_when_docker_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(*args: object, **kwargs: object) -> None:
         raise FileNotFoundError("no docker")

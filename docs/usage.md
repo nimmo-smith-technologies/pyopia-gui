@@ -30,7 +30,7 @@ You'll need two things installed on your computer:
 From a terminal, in the pyopia-gui project folder:
 
 ```bash
-uv sync --all-groups
+uv sync
 uv run pyopia-gui
 ```
 
@@ -59,7 +59,8 @@ Once Docker's ready, you'll see:
   showing PyOPIA's own output in detail - useful if something goes wrong and you want
   to see exactly what happened.
 
-Hovering over any of these shows a short explanation too.
+The pyopia-gui version is shown in the header at all times. Hovering over any element
+on the page shows a short explanation too.
 
 ## Trying it out
 
@@ -69,8 +70,12 @@ The quickest way to see pyopia-gui working:
    take a little while the first time, since it also needs to download PyOPIA's Docker
    image if you don't already have it.
 2. Once that finishes, click **2. Run processing**.
-3. When it's done, a montage image of the particles found in the example data appears
-   at the bottom of the page.
+3. Once processing itself finishes, the exact PyOPIA version that produced the
+   results appears on the page - read straight from that run's own output, so it's
+   always an accurate record of what actually processed the data, useful if you need
+   to report which version of PyOPIA your results came from.
+4. When everything's done, a montage image of the particles found in the example data
+   appears at the bottom of the page.
 
 ## Using your own data
 

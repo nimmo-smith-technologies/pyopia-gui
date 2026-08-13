@@ -5,7 +5,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from pyopia_gui import docker_client
+from pyopia_gui import __version__, docker_client
 
 DEFAULT_PROJECT_DIR = Path.home() / "pyopia-gui-projects" / "demo"
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
@@ -62,7 +62,9 @@ def _open_folder_browser(folder_input: ui.input) -> None:
 @ui.page("/")
 def index() -> None:
     with ui.header().classes("items-center justify-between"):
-        ui.label("pyopia-gui").classes("text-2xl")
+        with ui.row().classes("items-baseline gap-2"):
+            ui.label("pyopia-gui").classes("text-2xl")
+            ui.label(f"v{__version__}").classes("text-sm text-white/70")
         ui.link("View on GitHub ↗", REPO_URL, new_tab=True).classes("text-white")
 
     with ui.footer().classes("justify-center"):
@@ -110,6 +112,9 @@ def index() -> None:
     """)
     log = ui.log(max_lines=500).classes("pyopia-log w-full h-64 bg-black text-white")
     log.tooltip("Raw output from PyOPIA - useful for troubleshooting if something goes wrong")
+    pyopia_version_label = ui.label().classes("text-sm text-gray-500")
+    pyopia_version_label.tooltip("The PyOPIA version that actually processed the data below")
+    pyopia_version_label.visible = False
     montage = ui.image().classes("w-full max-w-2xl")
     montage.tooltip("A montage of example particles found while processing")
     montage.visible = False
@@ -173,6 +178,7 @@ def index() -> None:
             return
 
         run_button.disable()
+        pyopia_version_label.visible = False
         set_status("Running processing (this can take a few minutes)…", busy=True)
         exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir))
         if exit_code != 0:
@@ -180,6 +186,11 @@ def index() -> None:
             run_button.enable()
             return
         ui.notify("Processing complete", type="positive")
+
+        pyopia_version = docker_client.extract_pyopia_version(lines)
+        if pyopia_version:
+            pyopia_version_label.set_text(f"Processed with PyOPIA v{pyopia_version}")
+            pyopia_version_label.visible = True
 
         set_status("Merging results…", busy=True)
         merge_exit_code, merge_lines = await run_streamed_to_log(docker_client.merge_mfdata_command(project_dir))

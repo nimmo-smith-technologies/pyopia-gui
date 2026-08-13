@@ -24,11 +24,11 @@ Requires [uv](https://docs.astral.sh/uv/) and [Docker](https://docs.docker.com/g
 (pyopia-gui orchestrates PyOPIA's own Docker image to run processing).
 
 ```bash
-uv sync --all-groups   # install dependencies
-uv run pyopia-gui      # run the app
-uv run pytest          # run the tests
-uv run ruff check .    # lint
-uv run mkdocs serve    # preview the docs locally
+uv sync --group dev --group docs   # install dependencies
+uv run pyopia-gui                  # run the app
+uv run pytest                      # run the tests
+uv run ruff check .                # lint
+uv run mkdocs serve                # preview the docs locally
 ```
 
 > **Note:** `ghcr.io/sintef/pyopia` isn't currently publicly pullable ([upstream
@@ -47,6 +47,22 @@ field controls both what "Create example project" creates and what "Run
 processing" processes - it starts out pointing at a canned example project you
 can create with one click, but you can browse to (or type) any folder with its
 own PyOPIA `config.toml` at any time.
+
+## Building a native app (experimental)
+
+pyopia-gui can also be bundled into a standalone, double-click-to-run app with
+[PyInstaller](https://pyinstaller.org/) - no `uv`, Python, or terminal needed to
+*use* the result, though building it still does:
+
+```bash
+uv sync --group native
+uv run nicegui-pack --name pyopia-gui --onefile --windowed src/pyopia_gui/native_app.py
+```
+
+The built app appears under `dist/`. This is experimental and not yet
+distributed anywhere - `.github/workflows/build-native.yml` can build it for
+Linux, macOS, and Windows in CI, but there's no published, downloadable release
+of it yet.
 
 ## License
 

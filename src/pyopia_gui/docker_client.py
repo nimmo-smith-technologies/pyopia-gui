@@ -4,6 +4,7 @@
 import asyncio
 import os
 import platform
+import re
 import subprocess
 import tomllib
 from collections.abc import Callable
@@ -245,6 +246,23 @@ def interpret_failure(output_lines: list[str]) -> str | None:
         )
     if any(marker in combined for marker in _DAEMON_UNREACHABLE_MARKERS):
         return "Lost contact with Docker partway through - check it's still running, then try again."
+    return None
+
+
+_PYOPIA_VERSION_PATTERN = re.compile(r"PYOPIA VERSION (\S+)")
+
+
+def extract_pyopia_version(output_lines: list[str]) -> str | None:
+    """Read the PyOPIA version out of `pyopia process`'s own output, if present.
+
+    `process` prints "PYOPIA VERSION x.y.z" as its first line - reading it from the
+    actual run's output ties the reported version to what really processed the data,
+    rather than a separate (and potentially stale) version check.
+    """
+    for line in output_lines:
+        match = _PYOPIA_VERSION_PATTERN.search(line)
+        if match:
+            return match.group(1)
     return None
 
 
