@@ -43,6 +43,51 @@ If Docker isn't installed, or isn't running, pyopia-gui shows you exactly what's
 and what to do about it - the instructions are specific to your operating system
 (Linux, Mac, or Windows). Once you've followed them, click **Recheck**.
 
+A couple of things worth knowing before you start, especially on Windows:
+
+### The Docker Hub account prompt
+
+Docker Desktop's installer asks you to sign in or create a free Docker Hub account.
+pyopia-gui doesn't need this - it never talks to Docker Hub, only to GitHub's
+container registry - so look for a "skip" or "continue without signing in" option.
+If you do create one, it's a low-stakes account: no payment details needed, nothing
+sensitive stored there, so ordinary password hygiene is enough - no need to treat it
+like a banking password.
+
+### Windows: WSL2
+
+Docker Desktop on Windows needs WSL2 (Windows Subsystem for Linux) installed. Recent
+versions of Docker Desktop detect if it's missing and offer to set it up for you, but
+if you're prompted separately, or Docker Desktop says WSL isn't installed:
+
+1. Open PowerShell **as Administrator** (right-click it → "Run as administrator") and
+   run:
+   ```powershell
+   wsl --install
+   ```
+2. **Restart your computer** - this step matters, Docker Desktop won't detect WSL2
+   until you do.
+3. Relaunch Docker Desktop.
+
+If `wsl --install` itself fails:
+
+- **Check virtualization is enabled in your BIOS/UEFI** (Task Manager → Performance
+  tab → CPU → "Virtualization"). It's off by default on some machines, and WSL2 can't
+  work without it - if it's off, no software fix will help until it's enabled in the
+  firmware settings.
+- **Make sure Windows Update is fully up to date** - `wsl --install` can fail on a
+  system that's missed prerequisite updates.
+- **Try the manual two-step method** instead of the all-in-one command:
+  ```powershell
+  dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+  dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+  ```
+  then restart and try `wsl --install` again.
+- If it still fails with no clear reason, check **Event Viewer** (Windows Logs →
+  Application, or Applications and Services Logs → Microsoft → Windows → Lxss) for
+  the actual underlying error - "Catastrophic failure" is just Windows' generic
+  wrapper message and doesn't say what really went wrong.
+
 ## The main screen
 
 Once Docker's ready, you'll see:
