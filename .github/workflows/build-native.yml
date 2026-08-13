@@ -2,6 +2,12 @@ name: Build native app
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # only needed to publish release assets when triggered by a tag
 
 jobs:
   build:
@@ -59,3 +65,12 @@ jobs:
         with:
           name: ${{ matrix.artifact-name }}
           path: ${{ matrix.dist-path }}
+
+      # Only on an actual version tag (not workflow_dispatch): publish straight to the
+      # matching GitHub Release, so there's no manual download-from-CI-then-reupload
+      # step. Safe to run once per matrix platform - it appends to the same release.
+      - name: Publish to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ matrix.dist-path }}
