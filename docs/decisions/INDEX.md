@@ -22,6 +22,7 @@ NNNN." This preserves the full history of design reasoning.
 | 0004  | 12 Aug 2026  | DCO for contributions, not a CLA          | Accepted |
 | 0005  | 13 Aug 2026  | Docker-only processing backend            | Accepted |
 | 0006  | 13 Aug 2026  | Mirror PyOPIA's image as a temporary default | Accepted |
+| 0007  | 14 Aug 2026  | Vendor PyOPIA's statistics functions for Results | Accepted |
 
 ---
 

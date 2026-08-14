@@ -271,6 +271,16 @@ def _output_datafile(project_dir: Path, config_filename: str) -> str:
     return _load_config(project_dir, config_filename)["steps"]["output"]["output_datafile"]
 
 
+def pixel_size(project_dir: Path, config_filename: str = "config.toml") -> float:
+    """The `general.pixel_size` (microns per pixel) from the project's config.
+
+    Needed to convert the raw pixel measurements in a project's stats file into real-world
+    units (see vendored_stats.py) - the same config key PyOPIA's own CLI reads for montage
+    and plotting (`config["general"]["pixel_size"]` in pyopia/cli.py).
+    """
+    return _load_config(project_dir, config_filename)["general"]["pixel_size"]
+
+
 def stats_filename(project_dir: Path, config_filename: str = "config.toml") -> str:
     """The path to the merged STATS.nc file `merge-mfdata` will produce, relative to the project dir."""
     return f"{_output_datafile(project_dir, config_filename)}-STATS.nc"

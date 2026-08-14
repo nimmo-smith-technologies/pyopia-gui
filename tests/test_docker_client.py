@@ -90,6 +90,12 @@ def test_stats_filename_reads_output_datafile_from_config(tmp_path: Path) -> Non
     assert docker_client.stats_filename(tmp_path) == "processed/demo-STATS.nc"
 
 
+def test_pixel_size_reads_general_config(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text("[general]\npixel_size = 24\n")
+
+    assert docker_client.pixel_size(tmp_path) == 24
+
+
 def test_image_for_version_uses_mirror_tag(tmp_path: Path) -> None:
     assert docker_client.image_for_version("2.16.20") == "ghcr.io/nimmo-smith-technologies/pyopia:2.16.20"
 

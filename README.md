@@ -76,6 +76,9 @@ modify and redistribute this software, including running it as a hosted
 service, provided that modifications - including to a version offered over a
 network - are made available under the same licence.
 
+It also includes some third-party code under its own license - see
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
 ## Contributing
 
 Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md).

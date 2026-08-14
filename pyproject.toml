@@ -11,6 +11,16 @@ requires-python = ">=3.12"
 readme = "README.md"
 dependencies = [
     "nicegui>=2.0.0",
+    # For reading and summarising a project's own -STATS.nc output on the Results tab
+    # (see src/pyopia_gui/vendored_stats.py and ADR 0007) - h5netcdf matches the exact
+    # engine PyOPIA's own pyopia/io.py uses to read these files. h5netcdf needs h5py as
+    # its actual backend (not pulled in automatically - confirmed by a real ImportError
+    # without it).
+    "xarray>=2024.1.0",
+    "pandas>=2.0.0",
+    "numpy>=1.26.0",
+    "h5netcdf>=1.3.0",
+    "h5py>=3.10.0",
 ]
 
 [project.urls]
