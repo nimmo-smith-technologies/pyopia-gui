@@ -43,22 +43,33 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        # Tagged with the run ID only for now, not :latest yet - pyopia_ref can be an
+        # older commit (e.g. to backfill a version tag for testing), and :latest must
+        # never regress to something older than whatever it already points at.
         uses: docker/build-push-action@v7
         with:
           context: .
           push: true
           load: true
-          tags: ghcr.io/nimmo-smith-technologies/pyopia:latest
+          tags: ghcr.io/nimmo-smith-technologies/pyopia:build-${{ github.run_id }}
 
-      - name: Also tag with PyOPIA's own version
+      - name: Tag with PyOPIA's own version, and advance :latest only if this is newer
         # pyopia-gui pins projects to a specific PyOPIA version once they have output (see
         # docker_client.py) - that needs a real, immutable tag to pin to, not just the
         # floating :latest. The image's ENTRYPOINT is already ["pyopia"], so "--version" is
         # passed straight to it (not "pyopia --version", which pyopia's CLI itself rejects
         # as an unknown subcommand called "pyopia") - it prints "PyOPIA version: X.Y.Z".
         run: |
-          version=$(docker run --rm ghcr.io/nimmo-smith-technologies/pyopia:latest --version | awk '{print $NF}')
+          build_tag=ghcr.io/nimmo-smith-technologies/pyopia:build-${{ github.run_id }}
+          version=$(docker run --rm "$build_tag" --version | awk '{print $NF}')
           echo "PyOPIA version: $version"
-          docker buildx imagetools create \
-            --tag ghcr.io/nimmo-smith-technologies/pyopia:"$version" \
-            ghcr.io/nimmo-smith-technologies/pyopia:latest
+          docker buildx imagetools create --tag ghcr.io/nimmo-smith-technologies/pyopia:"$version" "$build_tag"
+
+          current_latest=$(docker run --rm ghcr.io/nimmo-smith-technologies/pyopia:latest --version 2>/dev/null | awk '{print $NF}' || echo "0")
+          newest=$(printf '%s\n%s\n' "$current_latest" "$version" | sort -V | tail -1)
+          if [ "$newest" = "$version" ] && [ "$version" != "$current_latest" ]; then
+            echo "Advancing :latest ($current_latest -> $version)"
+            docker buildx imagetools create --tag ghcr.io/nimmo-smith-technologies/pyopia:latest "$build_tag"
+          else
+            echo "Not touching :latest - it's already at $current_latest, not older than this build ($version)"
+          fi
