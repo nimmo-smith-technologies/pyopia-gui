@@ -24,7 +24,7 @@ open it - see [Docker isn't ready yet](#docker-isnt-ready-yet) below.
 
 ## Getting pyopia-gui
 
-### Option A: Download the app (recommended)
+### Option A: Download the app (no install needed)
 
 No Python or terminal needed for this option. Go to the
 [Releases page](https://github.com/nimmo-smith-technologies/pyopia-gui/releases),
@@ -164,7 +164,7 @@ tabs - each one only usable once it's actually relevant:
 2. **Raw data explorer** and 3. **Configuration** - shown but disabled for now
    ("coming soon") - planned but not built yet.
 4. **Process** - becomes available once the Project folder field points at a valid
-   PyOPIA project (a folder with a `config.toml`). **2. Run processing** runs PyOPIA
+   PyOPIA project (a folder with a `config.toml`). **4. Run processing** runs PyOPIA
    on it, then builds a montage image of the particles found.
 5. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
@@ -174,9 +174,10 @@ Below the tabs, a **status line** shows what's currently happening, and a **log
 panel** shows PyOPIA's own output in detail - useful if something goes wrong and you
 want to see exactly what happened. Both stay visible no matter which tab you're on.
 
-The pyopia-gui version is shown in the header at all times, alongside an **About**
-link with the license and third-party attributions. Hovering over any element on the
-page shows a short explanation too.
+The pyopia-gui version is shown in the header at all times - it also checks for a
+newer release and shows a link to it there if one's available - alongside an
+**About** link with the license and third-party attributions. Hovering over any
+element on the page shows a short explanation too.
 
 ## Trying it out
 
@@ -185,7 +186,7 @@ The quickest way to see pyopia-gui working:
 1. Click **1. Create example project**. This downloads some example data - it can
    take a little while the first time, since it also needs to download PyOPIA's
    Docker image if you don't already have it.
-2. Switch to the **Process** tab (now enabled) and click **2. Run processing**.
+2. Switch to the **Process** tab (now enabled) and click **4. Run processing**.
 3. Once processing finishes, pyopia-gui switches to the **Results** tab automatically.
    It shows the exact PyOPIA version that produced the results - read from the
    project's own output, so it's always an accurate record, useful if you need to
@@ -213,7 +214,7 @@ silently switches versions partway through and produces inconsistent results.
 
 To deliberately switch a project to a different version, move or delete its existing
 results (the `...-STATS.nc` file named in `config.toml`'s `output_datafile`) before
-clicking **2. Run processing** again - with no existing results to stay consistent
+clicking **4. Run processing** again - with no existing results to stay consistent
 with, pyopia-gui asks you to choose a version again.
 
 ## If something goes wrong
@@ -223,7 +224,7 @@ with, pyopia-gui asks you to choose a version again.
   in the log panel where it happened.
 - **"This folder already exists"** - shown if you click **1. Create example project**
   pointing at a folder that's already there. Either pick a different, new folder, or
-  if that folder already has a project in it, just click **2. Run processing**
+  if that folder already has a project in it, just click **4. Run processing**
   instead.
 - For anything else, the log panel shows PyOPIA's own detailed output, which usually
   explains what happened.

@@ -20,6 +20,11 @@ the processing engine, developed and maintained at
 
 ## Getting started
 
+Just want to use pyopia-gui, without installing Python or using a terminal? See the
+[usage guide](docs/usage.md#option-a-download-the-app-no-install-needed) instead - it
+walks through downloading a ready-to-run copy. The steps below are for running (and
+developing) pyopia-gui from source.
+
 Requires [uv](https://docs.astral.sh/uv/) and [Docker](https://docs.docker.com/get-docker/)
 (pyopia-gui orchestrates PyOPIA's own Docker image to run processing).
 
@@ -64,9 +69,10 @@ for Linux, macOS (Apple Silicon only), and Windows in CI and publishes it to the
 [Releases page](https://github.com/nimmo-smith-technologies/pyopia-gui/releases) on a
 tagged version. For downloading and running a pre-built copy, including per-platform
 setup notes, see the
-[usage guide](docs/usage.md#option-a-download-the-app-recommended) instead of building
-your own - still experimental/alpha, not yet the recommended way to run pyopia-gui day
-to day.
+[usage guide](docs/usage.md#option-a-download-the-app-no-install-needed) instead of
+building your own. The downloadable app is newer and less tested than running from
+source (see [Getting started](#getting-started) above), so if you hit something
+unexpected, running from source is the more battle-tested fallback.
 
 ## License
 
