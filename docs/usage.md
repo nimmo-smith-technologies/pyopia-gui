@@ -194,6 +194,19 @@ processing**. Setting up a PyOPIA project from your own data currently needs PyO
 own command-line tools (see [PyOPIA's documentation](https://pyopia.readthedocs.io));
 an in-app way to do this is planned.
 
+## Choosing (and switching) a PyOPIA version
+
+The first time a project is processed - whether created via **1. Create example
+project** or pointed at your own not-yet-processed data - pyopia-gui asks which PyOPIA
+version to use. From then on, that same project always reuses exactly that version,
+even after newer ones are published, so reprocessing or resuming a dataset later never
+silently switches versions partway through and produces inconsistent results.
+
+To deliberately switch a project to a different version, move or delete its existing
+results (the `...-STATS.nc` file named in `config.toml`'s `output_datafile`) before
+clicking **2. Run processing** again - with no existing results to stay consistent
+with, pyopia-gui asks you to choose a version again.
+
 ## If something goes wrong
 
 - **A message about the PyOPIA image** - pyopia-gui explains what it thinks went

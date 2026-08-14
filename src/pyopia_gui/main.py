@@ -107,6 +107,50 @@ def _open_folder_browser(folder_input: ui.input) -> None:
     dialog.open()
 
 
+async def _choose_version(versions: list[str]) -> str | None:
+    """Ask the user to pick a PyOPIA version from `versions`, defaulting to the newest.
+
+    Returns the chosen version, or None if cancelled.
+    """
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Choose a PyOPIA version").classes("text-lg font-medium")
+        ui.label(
+            "This project has no processed results yet, so there's nothing to stay consistent "
+            "with - pick a version now and it'll keep using this same one from here on."
+        ).classes("text-sm text-gray-500")
+        version_select = ui.select(versions, value=versions[0], label="PyOPIA version").classes("w-full")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat")
+            ui.button("Use this version", on_click=lambda: dialog.submit(version_select.value))
+    return await dialog
+
+
+async def _confirm_pinned_version(pinned: str, newest: str | None) -> bool:
+    """Show which PyOPIA version a reprocessing run will use, and flag if a newer one exists.
+
+    Purely informational plus a confirm/cancel gate - the version itself is never chosen
+    here (see resolve_run_image's docstring on reproducibility): this only makes sure
+    it's always clear, every time, exactly what's about to run. Returns False if cancelled.
+    """
+    with ui.dialog() as dialog, ui.card():
+        ui.label(f"This will run PyOPIA v{pinned}").classes("text-lg font-medium")
+        if newest and newest != pinned:
+            ui.label(
+                f"A newer version (v{newest}) is available, but this project keeps using the "
+                "version its existing results were produced with, for consistency. Start a new "
+                "project, or clear this project's previous output, if you want to use the newer "
+                "version instead."
+            ).classes("text-sm text-gray-500")
+        else:
+            ui.label("This matches the version its existing results were produced with.").classes(
+                "text-sm text-gray-500"
+            )
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+            ui.button("Run processing", on_click=lambda: dialog.submit(True))
+    return bool(await dialog)
+
+
 async def _show_update_if_newer(update_link: ui.link) -> None:
     latest = await nicegui_run.io_bound(version_check.check_for_newer_release, __version__)
     if latest:
@@ -210,25 +254,30 @@ def index() -> None:
         set_status(message, busy=False)
         ui.notify(message, type="negative")
 
-    async def resolve_run_image(project_dir: Path) -> str:
-        """Which PyOPIA image to process `project_dir` with.
+    async def resolve_run_image(project_dir: Path) -> str | None:
+        """Which PyOPIA image to process `project_dir` with, or None if the user cancelled.
 
         Never picks a version automatically if one's already in play: if this project has
         existing output, reuses exactly the version that produced it, so reprocessing or
-        resuming a dataset never silently switches versions partway through. Only a brand
-        new project (handled in on_create, via the version picker) ever chooses freely.
+        resuming a dataset never silently switches versions partway through. A project with
+        no output yet - whether brand new or pointed at pre-existing, never-processed data -
+        gets the same explicit choice as on_create's version picker, for the same reason:
+        someone may deliberately want to match a different project's version.
         """
         if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
             return docker_client.PYOPIA_IMAGE
         pinned = await nicegui_run.io_bound(docker_client.read_pinned_version, project_dir)
-        if not pinned:
+        if pinned:
+            newest_available = await nicegui_run.io_bound(docker_client.list_available_versions)
+            newest = newest_available[0] if newest_available else None
+            if not await _confirm_pinned_version(pinned, newest):
+                return None
+            return docker_client.image_for_version(pinned)
+        versions = await nicegui_run.io_bound(docker_client.list_available_versions)
+        if not versions:
             return docker_client.PYOPIA_IMAGE
-        note = f"Using PyOPIA v{pinned} - matches this project's existing results"
-        newest_available = await nicegui_run.io_bound(docker_client.list_available_versions)
-        if newest_available and newest_available[0] != pinned:
-            note += f" (a newer version, v{newest_available[0]}, is available for new projects)"
-        log.push(note)
-        return docker_client.image_for_version(pinned)
+        chosen = await _choose_version(versions)
+        return docker_client.image_for_version(chosen) if chosen else None
 
     async def on_create() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
@@ -245,6 +294,9 @@ def index() -> None:
             return
 
         create_button.disable()
+        log.clear()
+        pyopia_version_label.visible = False
+        montage.visible = False
         set_status("Creating example project…", busy=True)
         parent_dir = project_dir.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
@@ -266,10 +318,19 @@ def index() -> None:
             return
 
         run_button.disable()
-        pyopia_version_label.visible = False
         set_status("Checking PyOPIA version…", busy=True)
         image = await resolve_run_image(project_dir)
+        if image is None:
+            set_status("Ready", busy=False)
+            run_button.enable()
+            return
 
+        # Clear everything left over from a previous run, now that this one's actually
+        # starting - otherwise a new run can look like it's continuing an old one, or a
+        # failed rerun can leave a stale (and no longer accurate) montage on screen.
+        log.clear()
+        pyopia_version_label.visible = False
+        montage.visible = False
         set_status("Running processing (this can take a few minutes)…", busy=True)
         exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir, image=image))
         if exit_code != 0:
