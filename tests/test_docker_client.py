@@ -97,7 +97,7 @@ def test_pixel_size_reads_general_config(tmp_path: Path) -> None:
 
 
 def test_image_for_version_uses_mirror_tag(tmp_path: Path) -> None:
-    assert docker_client.image_for_version("2.16.20") == "ghcr.io/nimmo-smith-technologies/pyopia:2.16.20"
+    assert docker_client.image_for_version("9.16.20") == "ghcr.io/nimmo-smith-technologies/pyopia:9.16.20"
 
 
 def test_image_for_version_falls_back_to_default_when_none() -> None:
@@ -107,7 +107,7 @@ def test_image_for_version_falls_back_to_default_when_none() -> None:
 def test_image_for_version_ignores_version_when_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/sintef/pyopia:latest")
 
-    assert docker_client.image_for_version("2.16.20") == "ghcr.io/sintef/pyopia:latest"
+    assert docker_client.image_for_version("9.16.20") == "ghcr.io/sintef/pyopia:latest"
 
 
 def _fake_response(payload: object) -> io.BytesIO:
@@ -120,11 +120,11 @@ def test_list_available_versions_sorts_newest_first_and_skips_non_version_tags(
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> io.BytesIO:
         if "token" in request.full_url:
             return _fake_response({"token": "fake-token"})
-        return _fake_response({"tags": ["latest", "main", "2.16.20", "2.16.23", "2.9.1"]})
+        return _fake_response({"tags": ["latest", "main", "9.16.20", "9.16.23", "9.9.1"]})
 
     monkeypatch.setattr(docker_client.urllib.request, "urlopen", fake_urlopen)
 
-    assert docker_client.list_available_versions() == ["2.16.23", "2.16.20", "2.9.1"]
+    assert docker_client.list_available_versions() == ["9.16.23", "9.16.20", "9.9.1"]
 
 
 def test_list_available_versions_returns_empty_on_network_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,11 +166,11 @@ def test_read_pinned_version_reads_version_from_existing_stats_file(
     stats_path.write_bytes(b"")
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(command, returncode=0, stdout="2.16.23\n")
+        return subprocess.CompletedProcess(command, returncode=0, stdout="9.16.23\n")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert docker_client.read_pinned_version(tmp_path) == "2.16.23"
+    assert docker_client.read_pinned_version(tmp_path) == "9.16.23"
 
 
 def test_read_pinned_version_returns_none_when_docker_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -273,16 +273,16 @@ def test_interpret_failure_recognises_stall() -> None:
 
 
 def test_interpret_failure_returns_none_for_unrecognised_output() -> None:
-    lines = ["PYOPIA VERSION 2.16.23", "LOAD CONFIG", "some unrelated error nobody has seen before"]
+    lines = ["PYOPIA VERSION 9.16.23", "LOAD CONFIG", "some unrelated error nobody has seen before"]
 
     assert docker_client.interpret_failure(lines) is None
 
 
 def test_extract_pyopia_version_reads_real_process_output() -> None:
     # Actual first lines of `docker run ... process config.toml` output, captured earlier.
-    lines = ["PYOPIA VERSION 2.16.23", "LOAD CONFIG", "OBTAIN IMAGE LIST"]
+    lines = ["PYOPIA VERSION 9.16.23", "LOAD CONFIG", "OBTAIN IMAGE LIST"]
 
-    assert docker_client.extract_pyopia_version(lines) == "2.16.23"
+    assert docker_client.extract_pyopia_version(lines) == "9.16.23"
 
 
 def test_extract_pyopia_version_returns_none_when_absent() -> None:

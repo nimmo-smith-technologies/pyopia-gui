@@ -291,7 +291,7 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def list_available_versions(timeout: float = 5.0) -> list[str]:
-    """Published PyOPIA versions on the mirror image, newest first (e.g. ["2.16.23", "2.16.20"]).
+    """Published PyOPIA versions on the mirror image, newest first (e.g. ["9.16.23", "9.16.20"]).
 
     Best-effort only: any failure (offline, registry error, unexpected response) returns an
     empty list rather than raising, so callers can fall back to the default image instead.
