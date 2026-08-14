@@ -409,6 +409,7 @@ async def test_run_shows_pyopia_version_after_successful_processing(
     folder_input.value = str(tmp_path)
 
     user.find(kind=ui.button, content="4. Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
 
     await user.should_see("processed with PyOPIA v2.16.23")
 
