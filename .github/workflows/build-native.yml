@@ -30,9 +30,11 @@ jobs:
           - os: macos-latest
             artifact-name: pyopia-gui-macos
             dist-path: dist/pyopia-gui-macos.zip
+            icon-path: assets/icon.icns
           - os: windows-latest
             artifact-name: pyopia-gui-windows
             dist-path: dist/pyopia-gui.exe
+            icon-path: assets/icon.ico
 
     steps:
       - name: Check out source repository
@@ -49,6 +51,7 @@ jobs:
         run: >
           uv run nicegui-pack --name pyopia-gui --onefile --windowed
           --osx-bundle-identifier com.nimmosmithtechnologies.pyopia-gui
+          --icon ${{ matrix.icon-path }}
           src/pyopia_gui/native_app.py
 
       - name: Zip the .app bundle (macOS)
@@ -58,9 +61,20 @@ jobs:
         # recognises it as an app after unzipping.
         run: cd dist && zip -r -X pyopia-gui-macos.zip pyopia-gui.app
 
-      - name: Build (Linux/Windows)
-        if: runner.os != 'macOS'
+      - name: Build (Linux)
+        # PyInstaller's --icon is a no-op on Linux ("Ignoring icon; supported only on
+        # Windows and macOS!", confirmed via a real build) - there's no equivalent
+        # embedding mechanism for a plain binary here, so it's omitted rather than
+        # passed pointlessly.
+        if: runner.os == 'Linux'
         run: uv run nicegui-pack --name pyopia-gui --onefile --windowed src/pyopia_gui/native_app.py
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: >
+          uv run nicegui-pack --name pyopia-gui --onefile --windowed
+          --icon ${{ matrix.icon-path }}
+          src/pyopia_gui/native_app.py
 
       - name: Zip the binary with execute permission set (Linux)
         if: runner.os == 'Linux'
