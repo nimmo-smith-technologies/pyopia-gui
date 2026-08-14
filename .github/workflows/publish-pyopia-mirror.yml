@@ -34,6 +34,10 @@ jobs:
         with:
           repository: SINTEF/pyopia
           ref: ${{ inputs.pyopia_ref }}
+          # actions/checkout's default shallow fetch only resolves branch/tag names, not
+          # an arbitrary commit SHA - fetch-depth: 0 (full history) is needed to support
+          # pinning to a specific past commit (e.g. to backfill an old version's tag).
+          fetch-depth: 0
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
