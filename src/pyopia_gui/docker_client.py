@@ -329,9 +329,12 @@ def read_pinned_version(project_dir: Path, config_filename: str = "config.toml")
         "docker",
         "run",
         "--rm",
+        # The image's own ENTRYPOINT is ["pyopia"] - override it for this one call, since
+        # we need to run python directly, not pass "python" to pyopia as a subcommand name.
+        "--entrypoint",
+        "python",
         *_volume_args(project_dir),
         PYOPIA_IMAGE,
-        "python",
         "-c",
         "import sys, xarray; print(xarray.open_dataset(sys.argv[1]).attrs['PyOPIA_version'])",
         f"{_CONTAINER_WORKDIR}/{relative_stats_path}",
