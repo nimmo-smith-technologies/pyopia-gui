@@ -153,46 +153,55 @@ every desktop environment.
 
 ## The main screen
 
-Once Docker's ready, you'll see:
+Once Docker's ready, pyopia-gui walks you through the stages of a processing run as
+tabs - each one only usable once it's actually relevant:
 
-- **Project folder** - the folder pyopia-gui will create an example project in, and/or
-  process. It starts out pointing at a ready-made example location. Click
-  **Browse…** to pick a different folder on your computer, or type a path directly.
-- **1. Create example project** - downloads a small set of example images and a
-  matching configuration file into the project folder above, so you have something to
-  try immediately without needing your own data.
-- **2. Run processing** - runs PyOPIA on whatever's in the project folder, then builds
-  a montage image of the particles it found.
-- A **status line** showing what's currently happening, and a **log panel** underneath
-  showing PyOPIA's own output in detail - useful if something goes wrong and you want
-  to see exactly what happened.
+1. **Project** - always available. The **Project folder** field is the folder
+   pyopia-gui will create an example project in, and/or process; it starts out
+   pointing at a ready-made example location. Click **Browse…** to pick a different
+   folder, or type a path directly. **1. Create example project** downloads a small
+   set of example images and a matching configuration file into it.
+2. **Raw data explorer** and 3. **Configuration** - shown but disabled for now
+   ("coming soon") - planned but not built yet.
+4. **Process** - becomes available once the Project folder field points at a valid
+   PyOPIA project (a folder with a `config.toml`). **2. Run processing** runs PyOPIA
+   on it, then builds a montage image of the particles found.
+5. **Results** - becomes available once that project actually has results (a
+   processed stats file). If you point pyopia-gui at an already-processed project,
+   it jumps here automatically and shows whatever's already there.
 
-The pyopia-gui version is shown in the header at all times. Hovering over any element
-on the page shows a short explanation too.
+Below the tabs, a **status line** shows what's currently happening, and a **log
+panel** shows PyOPIA's own output in detail - useful if something goes wrong and you
+want to see exactly what happened. Both stay visible no matter which tab you're on.
+
+The pyopia-gui version is shown in the header at all times, alongside an **About**
+link with the license and third-party attributions. Hovering over any element on the
+page shows a short explanation too.
 
 ## Trying it out
 
 The quickest way to see pyopia-gui working:
 
 1. Click **1. Create example project**. This downloads some example data - it can
-   take a little while the first time, since it also needs to download PyOPIA's Docker
-   image if you don't already have it.
-2. Once that finishes, click **2. Run processing**.
-3. Once processing itself finishes, the exact PyOPIA version that produced the
-   results appears on the page - read straight from that run's own output, so it's
-   always an accurate record of what actually processed the data, useful if you need
-   to report which version of PyOPIA your results came from.
-4. When everything's done, a montage image of the particles found in the example data
-   appears at the bottom of the page.
+   take a little while the first time, since it also needs to download PyOPIA's
+   Docker image if you don't already have it.
+2. Switch to the **Process** tab (now enabled) and click **2. Run processing**.
+3. Once processing finishes, pyopia-gui switches to the **Results** tab automatically.
+   It shows the exact PyOPIA version that produced the results - read from the
+   project's own output, so it's always an accurate record, useful if you need to
+   report which version of PyOPIA your results came from - plus a **Generate montage**
+   button (montages aren't built automatically) and summary statistics: particle
+   count, d50 (median particle size), and a size-distribution chart.
 
 ## Using your own data
 
 Instead of the example project, you can point pyopia-gui at any folder that already
 has a PyOPIA project set up in it (a `config.toml` file, plus your images) - type or
-browse to that folder in the **Project folder** field, then click **2. Run
-processing**. Setting up a PyOPIA project from your own data currently needs PyOPIA's
-own command-line tools (see [PyOPIA's documentation](https://pyopia.readthedocs.io));
-an in-app way to do this is planned.
+browse to that folder in the **Project folder** field, then use the **Process** tab.
+Setting up a PyOPIA project from your own data currently needs PyOPIA's own
+command-line tools (see [PyOPIA's documentation](https://pyopia.readthedocs.io)); an
+in-app way to do this is planned (see the **Configuration** and **Raw data explorer**
+tabs above).
 
 ## Choosing (and switching) a PyOPIA version
 

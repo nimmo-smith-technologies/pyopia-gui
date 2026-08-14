@@ -2,16 +2,26 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import os
+import tomllib
 import webbrowser
 from pathlib import Path
 
 from nicegui import background_tasks, ui
 from nicegui import run as nicegui_run
 
-from pyopia_gui import __version__, docker_client, version_check
+from pyopia_gui import __version__, docker_client, vendored_stats, version_check
 
 DEFAULT_PROJECT_DIR = Path.home() / "pyopia-gui-projects" / "demo"
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
+LICENSE_URL = f"{REPO_URL}/blob/main/LICENSE"
+THIRD_PARTY_LICENSES_URL = f"{REPO_URL}/blob/main/THIRD_PARTY_LICENSES.md"
+
+# Failure modes for reading/computing a project's summary stats: a different pinned
+# PyOPIA version's stats schema not matching what's vendored (KeyError), a stats file
+# still being written by a concurrent run or otherwise unreadable (OSError/ValueError),
+# or a malformed config.toml (TOMLDecodeError/TypeError, matching docker_client's own
+# config-reading error handling).
+_STATS_READ_ERRORS = (KeyError, ValueError, OSError, tomllib.TOMLDecodeError, TypeError)
 
 
 async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
@@ -32,11 +42,9 @@ async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
     None if there was nothing to choose from (offline, or PYOPIA_GUI_DOCKER_IMAGE
     already overrides the image entirely) or the dialog was cancelled.
     """
-    versions = (
-        []
-        if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ
-        else await nicegui_run.io_bound(docker_client.list_available_versions)
-    )
+    versions: list[str] = []
+    if "PYOPIA_GUI_DOCKER_IMAGE" not in os.environ:
+        versions = await nicegui_run.io_bound(docker_client.list_available_versions)
 
     with ui.dialog() as dialog, ui.card():
         ui.label("Create a new PyOPIA project here?").classes("text-lg font-medium")
@@ -147,7 +155,7 @@ async def _confirm_pinned_version(pinned: str, newest: str | None) -> bool:
             )
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
-            ui.button("Run processing", on_click=lambda: dialog.submit(True))
+            ui.button("Run processing", on_click=lambda: dialog.submit(True)).mark("confirm-pinned-version")
     return bool(await dialog)
 
 
@@ -156,6 +164,23 @@ async def _show_update_if_newer(update_link: ui.link) -> None:
     if latest:
         update_link.text = f"{latest} available ↗"
         update_link.visible = True
+
+
+def _show_about_dialog() -> None:
+    with ui.dialog() as dialog, ui.card():
+        ui.label("About pyopia-gui").classes("text-lg font-medium")
+        ui.label(f"Version {__version__}").classes("text-sm text-gray-500")
+        ui.label(
+            "Released under the GNU Affero General Public License v3.0 (AGPL-3.0) - "
+            "free to use, study, modify and redistribute, including as a hosted service, "
+            "provided modifications are shared under the same license."
+        ).classes("text-sm")
+        with ui.row().classes("gap-4"):
+            ui.link("License ↗", LICENSE_URL, new_tab=True)
+            ui.link("Third-party licenses ↗", THIRD_PARTY_LICENSES_URL, new_tab=True)
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Close", on_click=dialog.close).props("flat")
+    dialog.open()
 
 
 @ui.page("/")
@@ -168,7 +193,9 @@ def index() -> None:
             update_link.visible = False
             update_link.tooltip("A newer version of pyopia-gui is available - opens the Releases page")
             background_tasks.create(_show_update_if_newer(update_link), name="version-check")
-        ui.link("View on GitHub ↗", REPO_URL, new_tab=True).classes("text-white")
+        with ui.row().classes("items-center gap-4"):
+            ui.link("About", "#").on("click.prevent", _show_about_dialog).classes("text-white")
+            ui.link("View on GitHub ↗", REPO_URL, new_tab=True).classes("text-white")
 
     with ui.footer().classes("justify-center"):
         ui.label(
@@ -188,21 +215,61 @@ def index() -> None:
         recheck_button.tooltip("Re-checks whether Docker is installed and running")
         return
 
-    with ui.row().classes("w-full items-center gap-2"):
-        folder_input = ui.input("Project folder", value=str(DEFAULT_PROJECT_DIR)).classes("grow")
-        folder_input.tooltip("The PyOPIA project folder to create or process - must contain a config.toml")
-        browse_button = ui.button("Browse…", on_click=lambda: _open_folder_browser(folder_input))
-        browse_button.tooltip("Browse this computer's folders to pick an existing project")
-    ui.label(
-        "Determines where the example project below gets created, and what folder processing "
-        "runs against - point it at your own data any time."
-    ).classes("text-sm text-gray-500")
+    with ui.tabs().classes("border border-gray-300 rounded-t-lg") as tabs:
+        ui.tab("project", label="1. Project")
+        explorer_tab = ui.tab("explorer", label="2. Raw data explorer")
+        config_tab = ui.tab("config", label="3. Configuration")
+        process_tab = ui.tab("process", label="4. Process")
+        results_tab = ui.tab("results", label="5. Results")
+    process_tab.disable()
+    results_tab.disable()
+    explorer_tab.disable()
+    explorer_tab.tooltip("Coming soon")
+    config_tab.disable()
+    config_tab.tooltip("Coming soon")
+
+    with ui.tab_panels(tabs, value="project").classes("w-full"):
+        with ui.tab_panel("project"):
+            with ui.row().classes("w-full items-center gap-2"):
+                folder_input = ui.input("Project folder", value=str(DEFAULT_PROJECT_DIR)).classes("grow")
+                folder_input.tooltip("The PyOPIA project folder to create or process - must contain a config.toml")
+                folder_input.props("debounce=500")
+                browse_button = ui.button("Browse…", on_click=lambda: _open_folder_browser(folder_input))
+                browse_button.tooltip("Browse this computer's folders to pick an existing project")
+            ui.label(
+                "Determines where the example project below gets created, and what folder processing "
+                "runs against - point it at your own data any time."
+            ).classes("text-sm text-gray-500")
+            create_button = ui.button("1. Create example project")
+            create_button.tooltip(
+                "Downloads a small example dataset and sets up a ready-to-run PyOPIA project in the folder above"
+            )
+
+        with ui.tab_panel("explorer"):
+            ui.label("Raw data explorer - coming soon.").classes("text-sm text-gray-500")
+
+        with ui.tab_panel("config"):
+            ui.label("Configuration - coming soon.").classes("text-sm text-gray-500")
+
+        with ui.tab_panel("process"):
+            ui.label("Runs PyOPIA on the project folder above, then builds a montage of the particles found.").classes(
+                "text-sm text-gray-500"
+            )
+            run_button = ui.button("4. Run processing")
+            run_button.tooltip("Runs PyOPIA processing on the folder above")
+
+        with ui.tab_panel("results"):
+            results_busy_note = ui.label(
+                "Processing is running - results below may be about to change once it finishes."
+            ).classes("text-sm text-orange-600")
+            results_busy_note.visible = False
+            results_container = ui.column().classes("w-full gap-4")
 
     with ui.row().classes("items-center gap-2"):
         spinner = ui.spinner(size="md")
         spinner.visible = False
         status_label = ui.label("Ready").classes("text-md font-medium")
-        status_label.tooltip("The current step in the create/process workflow below")
+        status_label.tooltip("The current step in the create/process workflow above")
 
     ui.add_css("""
         .pyopia-log .q-scrollarea__bar {
@@ -219,23 +286,19 @@ def index() -> None:
     """)
     log = ui.log(max_lines=500).classes("pyopia-log w-full h-64 bg-black text-white")
     log.tooltip("Raw output from PyOPIA - useful for troubleshooting if something goes wrong")
-    pyopia_version_label = ui.label().classes("text-sm text-gray-500")
-    pyopia_version_label.tooltip("The PyOPIA version that actually processed the data below")
-    pyopia_version_label.visible = False
-    montage = ui.image().classes("w-full max-w-2xl")
-    montage.tooltip("A montage of example particles found while processing")
-    montage.visible = False
 
-    create_button = ui.button("1. Create example project")
-    create_button.tooltip(
-        "Downloads a small example dataset and sets up a ready-to-run PyOPIA project in the folder above"
-    )
-    run_button = ui.button("2. Run processing")
-    run_button.tooltip("Runs PyOPIA processing on the folder above, then builds a montage of the particles found")
+    # A version chosen for a brand new project (at create time, or by resolve_run_image's
+    # own picker) has nothing written to disk to read it back from until the first
+    # successful process/merge - without this, on_run() would ask again immediately
+    # after on_create() already asked, since read_pinned_version() still finds nothing.
+    # Keyed by str(project_dir); only remembered for this page session, not persisted -
+    # once real output exists, the stats file itself takes over as the source of truth.
+    chosen_versions_this_session: dict[str, str] = {}
 
     def set_status(text: str, *, busy: bool) -> None:
         status_label.set_text(text)
         spinner.visible = busy
+        results_busy_note.visible = busy
 
     async def run_streamed_to_log(command: list[str]) -> tuple[int, list[str]]:
         log.push("$ " + " ".join(command))
@@ -262,7 +325,11 @@ def index() -> None:
         resuming a dataset never silently switches versions partway through. A project with
         no output yet - whether brand new or pointed at pre-existing, never-processed data -
         gets the same explicit choice as on_create's version picker, for the same reason:
-        someone may deliberately want to match a different project's version.
+        someone may deliberately want to match a different project's version. But if that
+        choice was already made this session (e.g. moments ago at create time) and nothing's
+        been processed since, reuse it silently rather than asking again immediately - once
+        real output exists, `pinned` below takes over as the source of truth as usual, so
+        this only bridges the gap up to the first successful run, not the whole session.
         """
         if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
             return docker_client.PYOPIA_IMAGE
@@ -273,11 +340,151 @@ def index() -> None:
             if not await _confirm_pinned_version(pinned, newest):
                 return None
             return docker_client.image_for_version(pinned)
+        remembered = chosen_versions_this_session.get(str(project_dir))
+        if remembered:
+            return docker_client.image_for_version(remembered)
         versions = await nicegui_run.io_bound(docker_client.list_available_versions)
         if not versions:
             return docker_client.PYOPIA_IMAGE
         chosen = await _choose_version(versions)
+        if chosen:
+            chosen_versions_this_session[str(project_dir)] = chosen
         return docker_client.image_for_version(chosen) if chosen else None
+
+    async def image_for_existing_project(project_dir: Path) -> str:
+        """The image to use for further Docker operations (e.g. generating a montage) on a
+        project that already has results - always its pinned version, never a fresh choice,
+        since there's nothing to choose between once results already exist.
+        """
+        if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
+            return docker_client.PYOPIA_IMAGE
+        pinned = await nicegui_run.io_bound(docker_client.read_pinned_version, project_dir)
+        return docker_client.image_for_version(pinned)
+
+    async def refresh_results(project_dir: Path) -> None:
+        """(Re)build the Results tab's content from whatever's currently on disk."""
+        results_container.clear()
+        if docker_client.validate_project(project_dir) is not None:
+            with results_container:
+                ui.label("No valid project selected.").classes("text-sm text-gray-500")
+            return
+
+        stats_path = project_dir / docker_client.stats_filename(project_dir)
+        if not stats_path.is_file():
+            with results_container:
+                ui.label("No results yet - run processing first.").classes("text-sm text-gray-500")
+            return
+
+        with results_container:
+            pinned = await nicegui_run.io_bound(docker_client.read_pinned_version, project_dir)
+            if pinned:
+                ui.label(f"Project {project_dir} processed with PyOPIA v{pinned}").classes(
+                    "font-mono text-sm text-gray-500 break-all"
+                )
+
+            async def generate_montage() -> None:
+                image = await image_for_existing_project(project_dir)
+                set_status("Building montage…", busy=True)
+                command = docker_client.make_montage_command(
+                    project_dir, docker_client.stats_filename(project_dir), image=image
+                )
+                exit_code, lines = await run_streamed_to_log(command)
+                if exit_code == 0:
+                    set_status("Montage created", busy=False)
+                    await refresh_results(project_dir)
+                else:
+                    report_failure(lines, "Montage creation failed")
+
+            montage_path = project_dir / "montage.png"
+            if montage_path.is_file():
+                ui.image(str(montage_path)).classes("w-full max-w-2xl")
+                ui.label(str(montage_path)).classes("font-mono text-xs text-gray-500 break-all")
+                ui.button("Regenerate montage", on_click=generate_montage).tooltip(
+                    "Builds a new montage - particles are placed randomly, so each one looks different "
+                    "even from the same results"
+                )
+            else:
+                ui.button("Generate montage", on_click=generate_montage).tooltip(
+                    "Builds a montage image of the particles found, from this project's existing results"
+                )
+
+            try:
+                px_size = docker_client.pixel_size(project_dir)
+                summary = await nicegui_run.io_bound(vendored_stats.summarize, str(stats_path), px_size)
+            except _STATS_READ_ERRORS as e:
+                ui.label(f"Couldn't compute summary statistics: {e}").classes("text-sm text-red")
+            else:
+                if summary is None:
+                    # io_bound() returns None (rather than raising) if this call was
+                    # cancelled or the app is shutting down - nothing to show, and no
+                    # error either, since there's likely no page left to show it on.
+                    return
+                ui.label(
+                    f"{summary.particle_count} particles found across "
+                    f"{summary.images_with_particles} images with detected particles"
+                ).classes("text-md")
+                ui.label(f"d50 (median particle size): {summary.d50_microns:.1f} µm").classes("text-md")
+                # The size bins are log-spaced (get_size_bins() - each ~1.18x the last), so
+                # a log x-axis is what makes them appear evenly spaced, matching the data's
+                # real structure - needs a numeric ("value"/"log") axis rather than a
+                # "category" one, so points are given as explicit [x, y] pairs.
+                chart_options = {
+                    "tooltip": {"trigger": "item"},
+                    "grid": {"containLabel": True},
+                    "xAxis": {
+                        "type": "log",
+                        "name": "Diameter (µm)",
+                        "nameLocation": "middle",
+                        "nameGap": 30,
+                    },
+                    "yAxis": {
+                        "type": "value",
+                        "name": "Particle count",
+                        "nameLocation": "middle",
+                        "nameGap": 40,
+                        "nameRotate": 90,
+                    },
+                    "series": [
+                        {
+                            "type": "line",
+                            "symbol": "circle",
+                            "data": [
+                                [float(dia), float(count)]
+                                for dia, count in zip(summary.dias, summary.number_distribution, strict=True)
+                            ],
+                        }
+                    ],
+                }
+                # nicegui's own CSS hardcodes `.nicegui-echart { height: 16rem }`, which
+                # otherwise wins over the aspect-square utility (an explicit height beats
+                # aspect-ratio) - override it inline, which takes precedence over both.
+                ui.echart(chart_options).classes("w-full max-w-2xl aspect-square").style("height: auto")
+
+    async def refresh_project_state() -> None:
+        """Update tab availability for the current project folder, and jump to Results
+        if it already has output - opening an already-processed project should show
+        whatever's available immediately, not require a fresh run to see it.
+        """
+        project_dir = Path(folder_input.value.strip()).expanduser().resolve()
+        if docker_client.validate_project(project_dir) is None:
+            process_tab.enable()
+        else:
+            process_tab.disable()
+
+        try:
+            has_results = (project_dir / docker_client.stats_filename(project_dir)).is_file()
+        except _STATS_READ_ERRORS:
+            has_results = False
+
+        if has_results:
+            results_tab.enable()
+            await refresh_results(project_dir)
+            tabs.value = "results"
+        else:
+            results_tab.disable()
+
+    folder_input.on_value_change(lambda: background_tasks.create(refresh_project_state(), name="project-state"))
+    background_tasks.create(refresh_project_state(), name="initial-project-state")
 
     async def on_create() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
@@ -295,23 +502,30 @@ def index() -> None:
 
         create_button.disable()
         log.clear()
-        pyopia_version_label.visible = False
-        montage.visible = False
+        results_container.clear()
+        with results_container:
+            ui.label("No results yet - run processing first.").classes("text-sm text-gray-500")
         set_status("Creating example project…", busy=True)
         parent_dir = project_dir.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
+        if chosen_version:
+            # Remembered so the very first "Run processing" click doesn't ask again -
+            # there's nothing on disk yet for it to read this choice back from.
+            chosen_versions_this_session[str(project_dir)] = chosen_version
         image = docker_client.image_for_version(chosen_version)
         command = docker_client.init_project_command(parent_dir, project_dir.name, image=image)
         exit_code, lines = await run_streamed_to_log(command)
         if exit_code == 0:
             set_status("Example project created", busy=False)
             ui.notify("Example project created", type="positive")
+            await refresh_project_state()
+            tabs.value = "process"
         else:
             report_failure(lines, "Failed to create example project")
         create_button.enable()
 
     async def on_run() -> None:
-        project_dir = Path(folder_input.value.strip()).expanduser()
+        project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         error = docker_client.validate_project(project_dir)
         if error:
             ui.notify(error, type="negative")
@@ -327,10 +541,14 @@ def index() -> None:
 
         # Clear everything left over from a previous run, now that this one's actually
         # starting - otherwise a new run can look like it's continuing an old one, or a
-        # failed rerun can leave a stale (and no longer accurate) montage on screen.
+        # failed rerun can leave a stale (and no longer accurate) montage/stats on the
+        # Results tab. The old stats file itself isn't deleted here (only overwritten if
+        # this run succeeds), so this has to be an explicit clear, not just a re-check of
+        # disk state - a stale file would otherwise still be found and redisplayed as-is.
         log.clear()
-        pyopia_version_label.visible = False
-        montage.visible = False
+        results_container.clear()
+        with results_container:
+            ui.label("Processing is running…").classes("text-sm text-gray-500")
         set_status("Running processing (this can take a few minutes)…", busy=True)
         exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir, image=image))
         if exit_code != 0:
@@ -338,11 +556,6 @@ def index() -> None:
             run_button.enable()
             return
         ui.notify("Processing complete", type="positive")
-
-        pyopia_version = docker_client.extract_pyopia_version(lines)
-        if pyopia_version:
-            pyopia_version_label.set_text(f"Processed with PyOPIA v{pyopia_version}")
-            pyopia_version_label.visible = True
 
         set_status("Merging results…", busy=True)
         merge_exit_code, merge_lines = await run_streamed_to_log(
@@ -353,17 +566,14 @@ def index() -> None:
             run_button.enable()
             return
 
-        set_status("Building montage…", busy=True)
-        montage_command = docker_client.make_montage_command(
-            project_dir, docker_client.stats_filename(project_dir), image=image
-        )
-        montage_exit_code, montage_lines = await run_streamed_to_log(montage_command)
-        if montage_exit_code == 0:
-            montage.set_source(str(project_dir / "montage.png"))
-            montage.visible = True
-            set_status("Done - see your results below", busy=False)
-        else:
-            report_failure(montage_lines, "Montage creation failed")
+        # A previous montage was built from whatever stats existed before this run -
+        # now that reprocessing has produced fresh stats, that montage no longer
+        # necessarily matches them. Remove it rather than leave a stale one displayed;
+        # the Results tab's own "Generate montage" button makes a new one on demand.
+        (project_dir / "montage.png").unlink(missing_ok=True)
+
+        set_status("Done", busy=False)
+        await refresh_project_state()
         run_button.enable()
 
     create_button.on_click(on_create)
