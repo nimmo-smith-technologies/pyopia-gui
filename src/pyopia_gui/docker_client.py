@@ -2,20 +2,39 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import json
 import os
 import platform
 import re
 import subprocess
 import tomllib
+import urllib.request
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
+from urllib.error import URLError
 
 # ghcr.io/sintef/pyopia isn't currently publicly pullable
 # (https://github.com/SINTEF/pyopia/issues/424), so this defaults to a mirror we
 # publish ourselves (see .github/workflows/publish-pyopia-mirror.yml and
 # docs/decisions/0006-2026-08-13-mirror-pyopia-image.md) until that's fixed upstream.
-PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/nimmo-smith-technologies/pyopia:latest")
+_MIRROR_REPO = "nimmo-smith-technologies/pyopia"
+PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", f"ghcr.io/{_MIRROR_REPO}:latest")
+
+
+def image_for_version(version: str | None) -> str:
+    """The image reference to use for a specific PyOPIA `version`, or the default if None.
+
+    Ignores `version` entirely when PYOPIA_GUI_DOCKER_IMAGE is set - a manual override
+    already names a complete image:tag (possibly a different registry entirely), and
+    shouldn't be second-guessed by our own mirror-specific version tagging.
+    """
+    override = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE")
+    if override is not None:
+        return override
+    if not version:
+        return PYOPIA_IMAGE
+    return f"ghcr.io/{_MIRROR_REPO}:{version}"
 
 
 class DockerStatus(Enum):
@@ -177,21 +196,21 @@ def _user_args() -> list[str]:
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
 
-def init_project_command(parent_dir: Path, project_name: str) -> list[str]:
+def init_project_command(parent_dir: Path, project_name: str, image: str = PYOPIA_IMAGE) -> list[str]:
     """Build the command to create a new example PyOPIA project named `project_name` under `parent_dir`."""
     return [
         "docker",
         "run",
         "--rm",
         *_volume_args(parent_dir),
-        PYOPIA_IMAGE,
+        image,
         "init-project",
         project_name,
         "--example-data",
     ]
 
 
-def process_command(project_dir: Path, config_filename: str = "config.toml") -> list[str]:
+def process_command(project_dir: Path, config_filename: str = "config.toml", image: str = PYOPIA_IMAGE) -> list[str]:
     """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`."""
     return [
         "docker",
@@ -199,13 +218,15 @@ def process_command(project_dir: Path, config_filename: str = "config.toml") -> 
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
-        PYOPIA_IMAGE,
+        image,
         "process",
         config_filename,
     ]
 
 
-def merge_mfdata_command(project_dir: Path, config_filename: str = "config.toml") -> list[str]:
+def merge_mfdata_command(
+    project_dir: Path, config_filename: str = "config.toml", image: str = PYOPIA_IMAGE
+) -> list[str]:
     """Build the command to merge per-image STATS.nc files into the single combined file.
 
     `process` writes one -STATS.nc file per input image; make-montage needs the single
@@ -220,13 +241,13 @@ def merge_mfdata_command(project_dir: Path, config_filename: str = "config.toml"
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
-        PYOPIA_IMAGE,
+        image,
         "merge-mfdata",
         path_to_data,
     ]
 
 
-def make_montage_command(project_dir: Path, stats_filename: str) -> list[str]:
+def make_montage_command(project_dir: Path, stats_filename: str, image: str = PYOPIA_IMAGE) -> list[str]:
     """Build the command to create montage.png from a processed STATS.nc file."""
     return [
         "docker",
@@ -234,7 +255,7 @@ def make_montage_command(project_dir: Path, stats_filename: str) -> list[str]:
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
-        PYOPIA_IMAGE,
+        image,
         "make-montage",
         stats_filename,
     ]
@@ -253,6 +274,75 @@ def _output_datafile(project_dir: Path, config_filename: str) -> str:
 def stats_filename(project_dir: Path, config_filename: str = "config.toml") -> str:
     """The path to the merged STATS.nc file `merge-mfdata` will produce, relative to the project dir."""
     return f"{_output_datafile(project_dir, config_filename)}-STATS.nc"
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def list_available_versions(timeout: float = 5.0) -> list[str]:
+    """Published PyOPIA versions on the mirror image, newest first (e.g. ["2.16.23", "2.16.20"]).
+
+    Best-effort only: any failure (offline, registry error, unexpected response) returns an
+    empty list rather than raising, so callers can fall back to the default image instead.
+    Uses the registry's anonymous token flow directly (the same one `docker pull` itself
+    uses for a public image) rather than the `docker` CLI, since there's no `docker
+    images ls-remote` equivalent - listing what's on a registry needs the registry API.
+    """
+    try:
+        token_request = urllib.request.Request(f"https://ghcr.io/token?scope=repository:{_MIRROR_REPO}:pull")
+        with urllib.request.urlopen(token_request, timeout=timeout) as response:  # noqa: S310 fixed https:// URL above
+            token = json.load(response)["token"]
+        tags_request = urllib.request.Request(
+            f"https://ghcr.io/v2/{_MIRROR_REPO}/tags/list", headers={"Authorization": f"Bearer {token}"}
+        )
+        with urllib.request.urlopen(tags_request, timeout=timeout) as response:  # noqa: S310 fixed https:// URL above
+            tags = json.load(response)["tags"]
+    except (URLError, OSError, ValueError, KeyError):
+        return []
+    versions = []
+    for tag in tags:
+        try:
+            versions.append((_version_tuple(tag), tag))
+        except ValueError:
+            continue  # not a version tag (e.g. "latest", "main") - skip it
+    versions.sort(reverse=True)
+    return [tag for _, tag in versions]
+
+
+def read_pinned_version(project_dir: Path, config_filename: str = "config.toml") -> str | None:
+    """The PyOPIA version already recorded in this project's own stats file, if any exists.
+
+    PyOPIA writes its own version into every stats file it produces
+    (`xstats.attrs["PyOPIA_version"]` in pyopia/io.py) - reading it back from there, rather
+    than pyopia-gui keeping its own separate record, ties a project's pinned version to what
+    actually produced its real output data. Returns None if there's no stats file yet (a new
+    or not-yet-processed project) or if it can't be read for any reason.
+    """
+    try:
+        relative_stats_path = stats_filename(project_dir, config_filename)
+    except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError):
+        return None
+    if not (project_dir / relative_stats_path).is_file():
+        return None
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        *_volume_args(project_dir),
+        PYOPIA_IMAGE,
+        "python",
+        "-c",
+        "import sys, xarray; print(xarray.open_dataset(sys.argv[1]).attrs['PyOPIA_version'])",
+        f"{_CONTAINER_WORKDIR}/{relative_stats_path}",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=30, text=True, **_no_console_kwargs())
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def validate_project(project_dir: Path, config_filename: str = "config.toml") -> str | None:

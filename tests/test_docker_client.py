@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import io
+import json
 import platform
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
@@ -84,6 +88,97 @@ def test_stats_filename_reads_output_datafile_from_config(tmp_path: Path) -> Non
     _write_config(tmp_path, output_datafile="processed/demo")
 
     assert docker_client.stats_filename(tmp_path) == "processed/demo-STATS.nc"
+
+
+def test_image_for_version_uses_mirror_tag(tmp_path: Path) -> None:
+    assert docker_client.image_for_version("2.16.20") == "ghcr.io/nimmo-smith-technologies/pyopia:2.16.20"
+
+
+def test_image_for_version_falls_back_to_default_when_none() -> None:
+    assert docker_client.image_for_version(None) == docker_client.PYOPIA_IMAGE
+
+
+def test_image_for_version_ignores_version_when_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/sintef/pyopia:latest")
+
+    assert docker_client.image_for_version("2.16.20") == "ghcr.io/sintef/pyopia:latest"
+
+
+def _fake_response(payload: object) -> io.BytesIO:
+    return io.BytesIO(json.dumps(payload).encode())
+
+
+def test_list_available_versions_sorts_newest_first_and_skips_non_version_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> io.BytesIO:
+        if "token" in request.full_url:
+            return _fake_response({"token": "fake-token"})
+        return _fake_response({"tags": ["latest", "main", "2.16.20", "2.16.23", "2.9.1"]})
+
+    monkeypatch.setattr(docker_client.urllib.request, "urlopen", fake_urlopen)
+
+    assert docker_client.list_available_versions() == ["2.16.23", "2.16.20", "2.9.1"]
+
+
+def test_list_available_versions_returns_empty_on_network_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    def raise_url_error(request: urllib.request.Request, timeout: float) -> None:
+        raise URLError("offline")
+
+    monkeypatch.setattr(docker_client.urllib.request, "urlopen", raise_url_error)
+
+    assert docker_client.list_available_versions() == []
+
+
+def test_list_available_versions_returns_empty_on_unexpected_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> io.BytesIO:
+        if "token" in request.full_url:
+            return _fake_response({"token": "fake-token"})
+        return _fake_response({"unexpected": "shape"})
+
+    monkeypatch.setattr(docker_client.urllib.request, "urlopen", fake_urlopen)
+
+    assert docker_client.list_available_versions() == []
+
+
+def test_read_pinned_version_returns_none_when_no_stats_file_yet(tmp_path: Path) -> None:
+    _write_config(tmp_path)
+
+    assert docker_client.read_pinned_version(tmp_path) is None
+
+
+def test_read_pinned_version_returns_none_for_invalid_project(tmp_path: Path) -> None:
+    assert docker_client.read_pinned_version(tmp_path) is None
+
+
+def test_read_pinned_version_reads_version_from_existing_stats_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_config(tmp_path, output_datafile="processed/demo")
+    stats_path = tmp_path / "processed" / "demo-STATS.nc"
+    stats_path.parent.mkdir(parents=True)
+    stats_path.write_bytes(b"")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, returncode=0, stdout="2.16.23\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.read_pinned_version(tmp_path) == "2.16.23"
+
+
+def test_read_pinned_version_returns_none_when_docker_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_config(tmp_path, output_datafile="processed/demo")
+    stats_path = tmp_path / "processed" / "demo-STATS.nc"
+    stats_path.parent.mkdir(parents=True)
+    stats_path.write_bytes(b"")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, returncode=1, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.read_pinned_version(tmp_path) is None
 
 
 def test_validate_project_missing_config(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import os
 import webbrowser
 from pathlib import Path
 
@@ -13,7 +14,7 @@ DEFAULT_PROJECT_DIR = Path.home() / "pyopia-gui-projects" / "demo"
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
 
 
-async def _confirm_create(project_dir: Path) -> bool:
+async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
     """Ask the user to confirm the exact resolved path before creating anything there.
 
     The Docker mount already limits what a run can touch on the host to this one
@@ -23,17 +24,39 @@ async def _confirm_create(project_dir: Path) -> bool:
     full resolved path and requiring an explicit click catches that without
     blocking any particular location - including legitimate ones like an external
     drive's own root.
+
+    Also lets the user pick which PyOPIA version this new project should use, if the
+    mirror's published versions are reachable - a new project's version is never chosen
+    automatically, since someone may deliberately want to match an older project rather
+    than always get the newest. Returns (confirmed, chosen_version); chosen_version is
+    None if there was nothing to choose from (offline, or PYOPIA_GUI_DOCKER_IMAGE
+    already overrides the image entirely) or the dialog was cancelled.
     """
+    versions = (
+        []
+        if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ
+        else await nicegui_run.io_bound(docker_client.list_available_versions)
+    )
+
     with ui.dialog() as dialog, ui.card():
         ui.label("Create a new PyOPIA project here?").classes("text-lg font-medium")
         ui.label(str(project_dir)).classes("font-mono text-sm bg-gray-100 p-2 rounded break-all")
         ui.label("This creates a new folder at the exact path above and downloads example data into it.").classes(
             "text-sm text-gray-500"
         )
+        version_select = None
+        if versions:
+            version_select = ui.select(versions, value=versions[0], label="PyOPIA version").classes("w-full")
+            version_select.tooltip(
+                "Which PyOPIA version to use for this project - it'll keep using this same version "
+                "for consistency, even after newer ones become available"
+            )
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
             ui.button("Create here", on_click=lambda: dialog.submit(True))
-    return bool(await dialog)
+    confirmed = bool(await dialog)
+    chosen_version = version_select.value if (confirmed and version_select) else None
+    return confirmed, chosen_version
 
 
 def _open_folder_browser(folder_input: ui.input) -> None:
@@ -97,9 +120,7 @@ def index() -> None:
         with ui.row().classes("items-baseline gap-2"):
             ui.label("pyopia-gui").classes("text-2xl")
             ui.label(f"v{__version__}").classes("text-sm text-white/70")
-            update_link = ui.link("", version_check.RELEASES_PAGE_URL, new_tab=True).classes(
-                "text-sm text-yellow-300"
-            )
+            update_link = ui.link("", version_check.RELEASES_PAGE_URL, new_tab=True).classes("text-sm text-yellow-300")
             update_link.visible = False
             update_link.tooltip("A newer version of pyopia-gui is available - opens the Releases page")
             background_tasks.create(_show_update_if_newer(update_link), name="version-check")
@@ -189,6 +210,26 @@ def index() -> None:
         set_status(message, busy=False)
         ui.notify(message, type="negative")
 
+    async def resolve_run_image(project_dir: Path) -> str:
+        """Which PyOPIA image to process `project_dir` with.
+
+        Never picks a version automatically if one's already in play: if this project has
+        existing output, reuses exactly the version that produced it, so reprocessing or
+        resuming a dataset never silently switches versions partway through. Only a brand
+        new project (handled in on_create, via the version picker) ever chooses freely.
+        """
+        if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
+            return docker_client.PYOPIA_IMAGE
+        pinned = await nicegui_run.io_bound(docker_client.read_pinned_version, project_dir)
+        if not pinned:
+            return docker_client.PYOPIA_IMAGE
+        note = f"Using PyOPIA v{pinned} - matches this project's existing results"
+        newest_available = await nicegui_run.io_bound(docker_client.list_available_versions)
+        if newest_available and newest_available[0] != pinned:
+            note += f" (a newer version, v{newest_available[0]}, is available for new projects)"
+        log.push(note)
+        return docker_client.image_for_version(pinned)
+
     async def on_create() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         if project_dir.exists():
@@ -199,14 +240,16 @@ def index() -> None:
             )
             return
 
-        if not await _confirm_create(project_dir):
+        confirmed, chosen_version = await _confirm_create(project_dir)
+        if not confirmed:
             return
 
         create_button.disable()
         set_status("Creating example project…", busy=True)
         parent_dir = project_dir.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
-        command = docker_client.init_project_command(parent_dir, project_dir.name)
+        image = docker_client.image_for_version(chosen_version)
+        command = docker_client.init_project_command(parent_dir, project_dir.name, image=image)
         exit_code, lines = await run_streamed_to_log(command)
         if exit_code == 0:
             set_status("Example project created", busy=False)
@@ -224,8 +267,11 @@ def index() -> None:
 
         run_button.disable()
         pyopia_version_label.visible = False
+        set_status("Checking PyOPIA version…", busy=True)
+        image = await resolve_run_image(project_dir)
+
         set_status("Running processing (this can take a few minutes)…", busy=True)
-        exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir))
+        exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir, image=image))
         if exit_code != 0:
             report_failure(lines, "Processing failed")
             run_button.enable()
@@ -238,14 +284,18 @@ def index() -> None:
             pyopia_version_label.visible = True
 
         set_status("Merging results…", busy=True)
-        merge_exit_code, merge_lines = await run_streamed_to_log(docker_client.merge_mfdata_command(project_dir))
+        merge_exit_code, merge_lines = await run_streamed_to_log(
+            docker_client.merge_mfdata_command(project_dir, image=image)
+        )
         if merge_exit_code != 0:
             report_failure(merge_lines, "Merging processed stats failed")
             run_button.enable()
             return
 
         set_status("Building montage…", busy=True)
-        montage_command = docker_client.make_montage_command(project_dir, docker_client.stats_filename(project_dir))
+        montage_command = docker_client.make_montage_command(
+            project_dir, docker_client.stats_filename(project_dir), image=image
+        )
         montage_exit_code, montage_lines = await run_streamed_to_log(montage_command)
         if montage_exit_code == 0:
             montage.set_source(str(project_dir / "montage.png"))

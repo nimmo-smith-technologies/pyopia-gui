@@ -22,9 +22,7 @@ async def test_header_shows_pyopia_gui_version(user: User) -> None:
     await user.should_see(f"v{__version__}")
 
 
-async def test_header_shows_update_link_when_newer_release_exists(
-    user: User, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_header_shows_update_link_when_newer_release_exists(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(version_check, "check_for_newer_release", lambda *a, **k: "v99.0.0")
 
     await user.open("/")
@@ -121,6 +119,7 @@ async def test_create_shows_confirmation_dialog_with_resolved_path(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
     target = tmp_path / "new-project"
 
     await user.open("/")
@@ -137,6 +136,7 @@ async def test_create_cancelled_does_not_run_docker(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
     target = tmp_path / "new-project"
     calls: list[list[str]] = []
 
@@ -162,6 +162,7 @@ async def test_create_cancelled_does_not_run_docker(
 
 async def test_create_confirmed_runs_docker(user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
     target = tmp_path / "new-project"
 
     async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
@@ -177,6 +178,35 @@ async def test_create_confirmed_runs_docker(user: User, monkeypatch: pytest.Monk
     await user.should_see("Create a new PyOPIA project here?")
 
     user.find(kind=ui.button, content="Create here").click()
+
+
+async def test_create_lets_user_choose_pyopia_version(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.16.23", "2.16.20"])
+    target = tmp_path / "new-project"
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(target)
+
+    user.find(kind=ui.button, content="1. Create example project").click()
+    await user.should_see("Create a new PyOPIA project here?")
+
+    version_select = user.find(ui.select).elements.pop()
+    version_select.set_value("2.16.20")
+    user.find(kind=ui.button, content="Create here").click()
+    await asyncio.sleep(0.2)  # let on_create()'s coroutine run the (mocked) docker command
+
+    assert any("ghcr.io/nimmo-smith-technologies/pyopia:2.16.20" in command for command in calls)
 
     await user.should_see("Example project created")
 

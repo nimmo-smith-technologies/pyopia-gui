@@ -47,6 +47,16 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/nimmo-smith-technologies/pyopia:${{ inputs.pyopia_ref }}
+          load: true
+          tags: ghcr.io/nimmo-smith-technologies/pyopia:latest
+
+      - name: Also tag with PyOPIA's own version
+        # pyopia-gui pins projects to a specific PyOPIA version once they have output (see
+        # docker_client.py) - that needs a real, immutable tag to pin to, not just the
+        # floating :latest. "docker run ... pyopia --version" prints "PyOPIA version: X.Y.Z".
+        run: |
+          version=$(docker run --rm ghcr.io/nimmo-smith-technologies/pyopia:latest pyopia --version | awk '{print $NF}')
+          echo "PyOPIA version: $version"
+          docker buildx imagetools create \
+            --tag ghcr.io/nimmo-smith-technologies/pyopia:"$version" \
             ghcr.io/nimmo-smith-technologies/pyopia:latest
