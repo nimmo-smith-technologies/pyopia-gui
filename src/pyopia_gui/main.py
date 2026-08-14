@@ -4,9 +4,10 @@
 import webbrowser
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import background_tasks, ui
+from nicegui import run as nicegui_run
 
-from pyopia_gui import __version__, docker_client
+from pyopia_gui import __version__, docker_client, version_check
 
 DEFAULT_PROJECT_DIR = Path.home() / "pyopia-gui-projects" / "demo"
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
@@ -83,12 +84,25 @@ def _open_folder_browser(folder_input: ui.input) -> None:
     dialog.open()
 
 
+async def _show_update_if_newer(update_link: ui.link) -> None:
+    latest = await nicegui_run.io_bound(version_check.check_for_newer_release, __version__)
+    if latest:
+        update_link.text = f"{latest} available ↗"
+        update_link.visible = True
+
+
 @ui.page("/")
 def index() -> None:
     with ui.header().classes("items-center justify-between"):
         with ui.row().classes("items-baseline gap-2"):
             ui.label("pyopia-gui").classes("text-2xl")
             ui.label(f"v{__version__}").classes("text-sm text-white/70")
+            update_link = ui.link("", version_check.RELEASES_PAGE_URL, new_tab=True).classes(
+                "text-sm text-yellow-300"
+            )
+            update_link.visible = False
+            update_link.tooltip("A newer version of pyopia-gui is available - opens the Releases page")
+            background_tasks.create(_show_update_if_newer(update_link), name="version-check")
         ui.link("View on GitHub ↗", REPO_URL, new_tab=True).classes("text-white")
 
     with ui.footer().classes("justify-center"):

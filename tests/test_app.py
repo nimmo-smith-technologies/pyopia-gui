@@ -9,7 +9,7 @@ import pytest
 from nicegui import ui
 from nicegui.testing import User
 
-from pyopia_gui import __version__, docker_client
+from pyopia_gui import __version__, docker_client, version_check
 
 
 async def test_index_page_loads(user: User) -> None:
@@ -20,6 +20,25 @@ async def test_index_page_loads(user: User) -> None:
 async def test_header_shows_pyopia_gui_version(user: User) -> None:
     await user.open("/")
     await user.should_see(f"v{__version__}")
+
+
+async def test_header_shows_update_link_when_newer_release_exists(
+    user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(version_check, "check_for_newer_release", lambda *a, **k: "v99.0.0")
+
+    await user.open("/")
+
+    await user.should_see("v99.0.0 available")
+
+
+async def test_header_has_no_update_link_when_already_current(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(version_check, "check_for_newer_release", lambda *a, **k: None)
+
+    await user.open("/")
+    await asyncio.sleep(0.1)  # let the background version-check task finish before asserting its absence
+
+    await user.should_not_see("available ↗")
 
 
 async def test_shows_docker_warning_when_docker_not_installed(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
