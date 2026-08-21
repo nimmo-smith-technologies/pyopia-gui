@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import math
 import os
 import tomllib
 import webbrowser
@@ -294,7 +295,6 @@ def index() -> None:
     results_tab.disable()
     config_tab.disable()
     explorer_tab.disable()
-    explorer_tab.tooltip("Coming soon")
 
     with ui.tab_panels(tabs, value="project").classes("w-full"):
         with ui.tab_panel("project"):
@@ -314,15 +314,17 @@ def index() -> None:
             )
 
         with ui.tab_panel("explorer"):
-            ui.label("Raw data explorer - coming soon.").classes("text-sm text-gray-500")
+            explorer_container = ui.column().classes("w-full gap-4")
 
         with ui.tab_panel("config"):
             config_container = ui.column().classes("w-full gap-4")
 
         with ui.tab_panel("process"):
-            ui.label("Runs PyOPIA on the project folder above, then builds a montage of the particles found.").classes(
-                "text-sm text-gray-500"
-            )
+            process_project_label = ui.label().classes("font-mono text-sm text-gray-500 break-all")
+            ui.label(
+                "Runs PyOPIA on the project folder above - once finished, results are "
+                "available on the Results tab (including generating a montage there, on demand)."
+            ).classes("text-sm text-gray-500")
             run_button = ui.button("Run processing")
             run_button.tooltip("Runs PyOPIA processing on the folder above")
 
@@ -533,6 +535,7 @@ def index() -> None:
         config_container.clear()
         if docker_client.validate_project(project_dir) is not None:
             with config_container:
+                ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
                 ui.label("No valid project selected.").classes("text-sm text-gray-500")
             return
 
@@ -540,12 +543,14 @@ def index() -> None:
             config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
         except (OSError, tomllib.TOMLDecodeError) as e:
             with config_container:
+                ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
                 ui.label(f"Couldn't read config.toml: {e}").classes("text-sm text-red")
             return
         if config is None:
             return  # io_bound cancellation guard, same reasoning as refresh_results()
 
         with config_container:
+            ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
             general = config.get("general") if isinstance(config.get("general"), dict) else {}
 
             async def generate_default_config() -> None:
@@ -686,22 +691,177 @@ def index() -> None:
 
             ui.button("Save changes", on_click=save_changes).classes("mt-2")
 
+    _EXPLORER_PAGE_SIZE = 12
+
+    async def refresh_explorer(project_dir: Path) -> None:
+        """(Re)build the Raw data explorer tab: a paginated grid of raw-image thumbnails
+        for whatever `general.raw_files` currently matches.
+        """
+        explorer_container.clear()
+        if docker_client.validate_project(project_dir) is not None:
+            with explorer_container:
+                ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
+                ui.label("No valid project selected.").classes("text-sm text-gray-500")
+            return
+
+        try:
+            config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            with explorer_container:
+                ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
+                ui.label(f"Couldn't read config.toml: {e}").classes("text-sm text-red")
+            return
+        if config is None:
+            return  # io_bound cancellation guard, same reasoning as refresh_results()
+
+        general = config.get("general") if isinstance(config.get("general"), dict) else {}
+        raw_files_pattern = general.get("raw_files")
+
+        with explorer_container:
+            ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
+            if not raw_files_pattern:
+                ui.label("This project's config.toml doesn't set general.raw_files yet.").classes(
+                    "text-sm text-gray-500"
+                )
+                return
+
+            raw_paths = sorted(project_dir.glob(raw_files_pattern))
+            if not raw_paths:
+                ui.label(f"No raw files found matching '{raw_files_pattern}'.").classes("text-sm text-gray-500")
+                return
+
+            page_count = math.ceil(len(raw_paths) / _EXPLORER_PAGE_SIZE)
+            state = {"page": 0}
+
+            with ui.row().classes("items-center gap-2"):
+                previous_button = ui.button("Previous")
+                next_button = ui.button("Next")
+                refresh_button = ui.button("Refresh")
+                refresh_button.tooltip(
+                    "Reconvert every image on this page from scratch, ignoring any "
+                    "already-cached thumbnails - use this after changing config.toml's "
+                    "load step, since old previews from before the change won't update "
+                    "on their own"
+                )
+                page_label = ui.label().classes("text-sm text-gray-500")
+            progress_label = ui.label().classes("text-sm text-gray-500")
+            progress_label.visible = False
+            progress_bar = ui.linear_progress(value=0, show_value=False)
+            progress_bar.visible = False
+            grid = ui.grid(columns=4).classes("w-full gap-2")
+
+            async def show_page(force: bool = False) -> None:
+                page = state["page"]
+                page_label.set_text(f"Page {page + 1} of {page_count} ({len(raw_paths)} raw files)")
+                previous_button.set_enabled(page > 0)
+                next_button.set_enabled(page < page_count - 1)
+
+                page_paths = raw_paths[page * _EXPLORER_PAGE_SIZE : (page + 1) * _EXPLORER_PAGE_SIZE]
+                # Ordered the same way page_paths is (not a set) - this is the order images are
+                # actually sent for conversion, and each one's grid cell now fills in as soon as
+                # *that* image is done, so converting out of order would visibly fill the grid
+                # out of order too, even though every cell's own position stays correctly sorted.
+                to_convert = (
+                    list(page_paths)
+                    if force
+                    else [p for p in page_paths if not docker_client.thumbnail_path(project_dir, p).is_file()]
+                )
+                to_convert_set = set(to_convert)  # membership checks only, not iteration
+
+                def render_cell(raw_path: Path, *, pending: bool, error: str | None) -> None:
+                    """Add a raw file's current content into the calling `with cell:` block -
+                    its thumbnail/error, or a spinner while it's still pending (re)conversion,
+                    rather than a stale thumbnail in the process of being replaced, which could
+                    otherwise look like an up to date result when it's actually about to be
+                    overwritten.
+                    """
+                    if pending:
+                        ui.spinner(size="md")
+                    elif error:
+                        hint = docker_client.interpret_thumbnail_error(error) or error
+                        ui.icon("broken_image", size="lg").classes("text-red").tooltip(hint)
+                    else:
+                        thumb_path = docker_client.thumbnail_path(project_dir, raw_path)
+                        if thumb_path.is_file():
+                            ui.image(thumb_path).classes("w-32 h-32 object-cover rounded")
+                    ui.label(raw_path.name).classes("text-xs text-gray-500 break-all text-center")
+
+                grid.clear()
+                cells: dict[Path, ui.column] = {}
+                with grid:
+                    for raw_path in page_paths:
+                        with ui.column().classes("items-center gap-1") as cell:
+                            render_cell(raw_path, pending=raw_path in to_convert_set, error=None)
+                        cells[raw_path] = cell
+
+                if to_convert:
+
+                    def update_progress(done: int, total: int) -> None:
+                        progress_bar.set_value(done / total)
+                        progress_label.set_text(f"Converting raw image {done} of {total}…")
+
+                    def update_cell(raw_path: Path, error: str | None) -> None:
+                        cells[raw_path].clear()
+                        with cells[raw_path]:
+                            render_cell(raw_path, pending=False, error=error)
+
+                    progress_bar.set_value(0)
+                    progress_label.set_text(f"Converting raw image 0 of {len(to_convert)}…")
+                    progress_bar.visible = True
+                    progress_label.visible = True
+                    await docker_client.generate_thumbnails(
+                        project_dir, to_convert, on_progress=update_progress, on_image_done=update_cell
+                    )
+                    progress_bar.visible = False
+                    progress_label.visible = False
+
+            async def go_previous() -> None:
+                state["page"] -= 1
+                await show_page()
+
+            async def go_next() -> None:
+                state["page"] += 1
+                await show_page()
+
+            previous_button.on_click(go_previous)
+            next_button.on_click(go_next)
+            refresh_button.on_click(lambda: show_page(force=True))
+            await show_page()
+
+    # Converting a page of raw-image thumbnails is comparatively slow (a real Docker
+    # call per page) - loaded lazily, only once the Explorer tab is actually opened,
+    # rather than eagerly on every project-folder change like Configuration's (much
+    # cheaper, one call for the whole config) content is. Tracks which project_dir the
+    # currently-shown content was loaded for, so switching tabs back and forth doesn't
+    # keep reloading unnecessarily.
+    explorer_state: dict[str, Path | None] = {"project_dir": None, "loaded_for": None}
+
+    async def load_explorer_if_needed() -> None:
+        project_dir = explorer_state["project_dir"]
+        if tabs.value == "explorer" and project_dir is not None and explorer_state["loaded_for"] != project_dir:
+            explorer_state["loaded_for"] = project_dir
+            await refresh_explorer(project_dir)
+
+    tabs.on_value_change(lambda: background_tasks.create(load_explorer_if_needed(), name="explorer-lazy-load"))
+
     async def refresh_project_state() -> None:
         """Update tab availability for the current project folder, and jump to Results
         if it already has output - opening an already-processed project should show
-        whatever's available immediately, not require a fresh run to see it.
+        whatever's available immediately, not require a fresh run to see it. This jump
+        happens before Configuration's own (slower) content load, so it's never delayed
+        behind it - Explorer's own content loads lazily instead, see above.
         """
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
-        if docker_client.validate_project(project_dir) is None:
-            process_tab.enable()
-            config_tab.enable()
-            await refresh_config(project_dir)
-        else:
-            process_tab.disable()
-            config_tab.disable()
+        process_project_label.set_text(f"Project: {project_dir}")
+        is_valid = docker_client.validate_project(project_dir) is None
+        process_tab.set_enabled(is_valid)
+        config_tab.set_enabled(is_valid)
+        explorer_tab.set_enabled(is_valid)
+        explorer_state["project_dir"] = project_dir if is_valid else None
+        explorer_state["loaded_for"] = None  # force a fresh load next time Explorer is opened
 
         try:
-            has_results = (project_dir / docker_client.stats_filename(project_dir)).is_file()
+            has_results = is_valid and (project_dir / docker_client.stats_filename(project_dir)).is_file()
         except _STATS_READ_ERRORS:
             has_results = False
 
@@ -711,6 +871,10 @@ def index() -> None:
             tabs.value = "results"
         else:
             results_tab.disable()
+
+        if is_valid:
+            await refresh_config(project_dir)
+        await load_explorer_if_needed()  # covers already being on the Explorer tab
 
     folder_input.on_value_change(lambda: background_tasks.create(refresh_project_state(), name="project-state"))
     background_tasks.create(refresh_project_state(), name="initial-project-state")

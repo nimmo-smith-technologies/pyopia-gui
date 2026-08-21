@@ -161,15 +161,17 @@ tabs - each one only usable once it's actually relevant:
    pointing at a ready-made example location. Click **Browse…** to pick a different
    folder, or type a path directly. **Create example project** downloads a small
    set of example images and a matching configuration file into it.
-2. **Raw data explorer** - shown but disabled for now ("coming soon") - planned but
-   not built yet.
+2. **Raw data explorer** - becomes available once the Project folder field points at
+   a valid PyOPIA project. Browse a paginated grid of thumbnails of that project's raw
+   images - see [Browsing raw data](#browsing-raw-data) below.
 3. **Configuration** - becomes available once the Project folder field points at a
    valid PyOPIA project. Lets you view and edit that project's `config.toml` without
    needing a text editor - see [Editing a project's configuration](#editing-a-projects-configuration)
    below.
 4. **Process** - becomes available once the Project folder field points at a valid
    PyOPIA project (a folder with a `config.toml`). **Run processing** runs PyOPIA
-   on it, then builds a montage image of the particles found.
+   on it - once finished, results are available on the Results tab (including
+   generating a montage there, on demand - it isn't built automatically).
 5. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
    it jumps here automatically and shows whatever's already there.
@@ -202,12 +204,26 @@ The quickest way to see pyopia-gui working:
 
 Instead of the example project, you can point pyopia-gui at any folder that already
 has a PyOPIA project set up in it (a `config.toml` file, plus your images) - type or
-browse to that folder in the **Project folder** field, then use the **Configuration**
-tab to review/adjust its settings and the **Process** tab to run it. Getting your own
-raw images into a project folder in the first place currently needs to be done outside
-pyopia-gui (an in-app way to do this is planned - see the **Raw data explorer** tab
-above); once they're there, the **Configuration** tab (below) can generate PyOPIA's own
-default `config.toml` for you rather than needing PyOPIA's command-line tools.
+browse to that folder in the **Project folder** field, then use the **Raw data
+explorer** tab to check the right images are there, the **Configuration** tab to
+review/adjust its settings, and the **Process** tab to run it. Getting your own raw
+images into a project folder in the first place currently needs to be done outside
+pyopia-gui; once they're there, the **Configuration** tab (below) can generate
+PyOPIA's own default `config.toml` for you rather than needing PyOPIA's command-line
+tools.
+
+## Browsing raw data
+
+The **Raw data explorer** tab shows a paginated grid of thumbnails for whatever raw
+images the project's `config.toml` currently points at (its `general.raw_files`
+setting) - a quick way to check the right data is there before processing it. Each
+image's filename is shown underneath its thumbnail.
+
+Raw instrument files aren't directly viewable image formats (SilCam's `.silc` and
+holo's `.pgm` are raw sensor data, not standard images), so pyopia-gui converts them
+to previewable thumbnails the same way PyOPIA's own tools would - the first time you
+view a page of images this takes a few seconds, but each thumbnail is cached
+afterwards, so revisiting the same page is instant.
 
 ## Editing a project's configuration
 

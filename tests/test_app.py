@@ -38,12 +38,17 @@ async def _click_through_pinned_version_dialog_if_shown(user: User) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_real_docker_introspection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Any test that sets a valid project folder triggers refresh_config()'s background
-    Configuration-tab introspection call - default it to a no-op so tests that don't care
-    about Configuration-tab content don't slow down or hit a real Docker daemon. Tests that
-    do care override this explicitly with their own monkeypatch.setattr(...) call.
+    """Any test that sets a valid project folder triggers refresh_config()'s and
+    refresh_explorer()'s background Docker calls - default both to a no-op so tests that
+    don't care about that tab's content don't slow down or hit a real Docker daemon. Tests
+    that do care override this explicitly with their own monkeypatch.setattr(...) call.
     """
     monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+
+    async def fake_generate_thumbnails(*a: object, **k: object) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(docker_client, "generate_thumbnails", fake_generate_thumbnails)
 
 
 async def test_index_page_loads(user: User) -> None:
@@ -125,16 +130,7 @@ async def test_main_screen_shows_expected_elements_when_docker_available(
     await user.should_see("Browse")
 
 
-async def test_raw_data_explorer_tab_is_disabled(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
-
-    await user.open("/")
-
-    tab = user.find(kind=ui.tab, content="2. Raw data explorer").elements.pop()
-    assert not tab.enabled
-
-
-async def test_process_results_and_config_tabs_start_disabled_for_invalid_default_project(
+async def test_process_results_config_and_explorer_tabs_start_disabled_for_invalid_default_project(
     user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The real default project folder may or may not exist on the machine running the
@@ -149,12 +145,14 @@ async def test_process_results_and_config_tabs_start_disabled_for_invalid_defaul
     process_tab = user.find(kind=ui.tab, content="4. Process").elements.pop()
     results_tab = user.find(kind=ui.tab, content="5. Results").elements.pop()
     config_tab = user.find(kind=ui.tab, content="3. Configuration").elements.pop()
+    explorer_tab = user.find(kind=ui.tab, content="2. Raw data explorer").elements.pop()
     assert not process_tab.enabled
     assert not results_tab.enabled
     assert not config_tab.enabled
+    assert not explorer_tab.enabled
 
 
-async def test_process_and_config_tabs_enable_for_a_valid_project(
+async def test_process_config_and_explorer_tabs_enable_for_a_valid_project(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
@@ -168,9 +166,31 @@ async def test_process_and_config_tabs_enable_for_a_valid_project(
     process_tab = user.find(kind=ui.tab, content="4. Process").elements.pop()
     results_tab = user.find(kind=ui.tab, content="5. Results").elements.pop()
     config_tab = user.find(kind=ui.tab, content="3. Configuration").elements.pop()
+    explorer_tab = user.find(kind=ui.tab, content="2. Raw data explorer").elements.pop()
     assert process_tab.enabled
     assert config_tab.enabled
+    assert explorer_tab.enabled
     assert not results_tab.enabled  # no stats file yet
+
+
+async def test_process_config_and_explorer_tabs_show_the_project_folder_path(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_pixel_size(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+
+    resolved = str(tmp_path.resolve())
+    # Process and Configuration both load eagerly, so this text already appears twice.
+    await user.should_see(f"Project: {resolved}")
+
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await asyncio.sleep(0.2)
+    await user.should_see(f"Project: {resolved}")
 
 
 async def test_opening_an_already_processed_project_auto_jumps_to_results(
@@ -778,3 +798,220 @@ async def test_generate_default_config_button_shows_confirm_dialog(
 
     await user.should_see("Generate a default config.toml?")
     await user.should_see("PyOPIA's own bare")
+
+
+async def test_explorer_tab_shows_no_raw_files_message_when_pattern_unset(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_pixel_size(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+
+    await user.should_see("doesn't set general.raw_files yet")
+
+
+async def test_explorer_tab_shows_no_raw_files_message_when_none_match(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)  # raw_files = "images/*.silc", but no images/ folder
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+
+    await user.should_see("No raw files found matching 'images/*.silc'")
+
+
+async def test_explorer_tab_shows_a_thumbnail_grid_for_raw_files(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "D20220608T184237.407722.silc").write_bytes(b"")
+    (images_dir / "D20220608T184238.407874.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+
+    await user.should_see("Page 1 of 1")
+    await user.should_see("D20220608T184237.407722.silc")
+    await user.should_see("D20220608T184238.407874.silc")
+
+
+async def test_explorer_tab_pagination_next_and_previous(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    for i in range(13):
+        (images_dir / f"D2022060{i:02d}T184237.407722.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Page 1 of 2")
+
+    previous_button = user.find(kind=ui.button, content="Previous").elements.pop()
+    next_button = user.find(kind=ui.button, content="Next").elements.pop()
+    assert not previous_button.enabled
+    assert next_button.enabled
+
+    user.find(kind=ui.button, content="Next").click()
+    await user.should_see("Page 2 of 2")
+    assert previous_button.enabled
+    assert not next_button.enabled
+
+    user.find(kind=ui.button, content="Previous").click()
+    await user.should_see("Page 1 of 2")
+
+
+async def test_explorer_tab_shows_a_plain_language_hint_for_a_load_mismatch(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+
+    async def fake_generate_thumbnails(
+        project_dir: Path,
+        raw_paths: list[Path],
+        on_image_done: Callable[[Path, str | None], None] | None = None,
+        **k: object,
+    ) -> dict[str, str]:
+        error = "OSError: Could not find a backend to open `foo.silc` with iomode `r`."
+        if on_image_done:
+            on_image_done(raw_paths[0], error)
+        return {str(raw_paths[0]): error}
+
+    monkeypatch.setattr(docker_client, "generate_thumbnails", fake_generate_thumbnails)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "D20220608T184237.407722.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+
+    await user.should_see("load step doesn't match")
+
+
+async def test_explorer_tab_refresh_button_retries_conversion(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    calls = {"n": 0}
+
+    async def fake_generate_thumbnails(project_dir: Path, raw_paths: list[Path], **k: object) -> dict[str, str]:
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(docker_client, "generate_thumbnails", fake_generate_thumbnails)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "D20220608T184237.407722.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("D20220608T184237.407722.silc")
+    assert calls["n"] == 1
+
+    user.find(kind=ui.button, content="Refresh").click()
+    await asyncio.sleep(0.2)
+
+    assert calls["n"] == 2
+
+
+async def test_explorer_tab_hides_stale_thumbnail_while_refresh_is_in_progress(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    raw_path = images_dir / "D20220608T184237.407722.silc"
+    raw_path.write_bytes(b"")
+
+    # Pre-seed a "cached" thumbnail so the page initially shows a real image, not a spinner.
+    thumb_path = docker_client.thumbnail_path(tmp_path, raw_path)
+    thumb_path.parent.mkdir(parents=True, exist_ok=True)
+    thumb_path.write_bytes(b"fake png bytes")
+
+    release_conversion = asyncio.Event()
+
+    async def slow_generate_thumbnails(project_dir: Path, raw_paths: list[Path], **k: object) -> dict[str, str]:
+        await release_conversion.wait()
+        return {}
+
+    monkeypatch.setattr(docker_client, "generate_thumbnails", slow_generate_thumbnails)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see(raw_path.name)
+    user.find(ui.image)  # the pre-seeded thumbnail is shown initially - raises if absent
+
+    user.find(kind=ui.button, content="Refresh").click()
+    await asyncio.sleep(0.2)
+
+    # Conversion is still pending (release_conversion not set yet) - the stale thumbnail
+    # must already be gone, not left showing while the real replacement is generated.
+    await user.should_not_see(kind=ui.image)
+
+    release_conversion.set()
+    await asyncio.sleep(0.2)
+
+
+async def test_explorer_tab_converts_images_in_sorted_order(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    calls: list[list[Path]] = []
+
+    async def fake_generate_thumbnails(project_dir: Path, raw_paths: list[Path], **k: object) -> dict[str, str]:
+        calls.append(raw_paths)
+        return {}
+
+    monkeypatch.setattr(docker_client, "generate_thumbnails", fake_generate_thumbnails)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    # Created out of alphabetical order, to prove it's sorting - not filesystem/creation
+    # order - that determines the order images are actually sent for conversion in (and
+    # therefore the order their grid cells fill in, now that each updates individually).
+    for name in ("c.silc", "a.silc", "b.silc"):
+        (images_dir / name).write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Page 1 of 1")
+    await asyncio.sleep(0.2)
+
+    assert len(calls) == 1
+    assert [p.name for p in calls[0]] == ["a.silc", "b.silc", "c.silc"]

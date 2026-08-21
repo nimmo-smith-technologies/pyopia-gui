@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import importlib
 import inspect
 import json
 import os
@@ -404,6 +405,22 @@ def read_pinned_version(project_dir: Path, config_filename: str = "config.toml")
     return result.stdout.strip() or None
 
 
+def resolve_pipeline_class(pipeline_class: str):
+    """Import and return the class a `pipeline_class` dotted path (e.g.
+    'pyopia.process.Segment') names.
+
+    Same resolution PyOPIA's own `pipeline.py` uses internally to load a step's class -
+    reused here (for introspection and thumbnail generation) rather than reinvented, so
+    both stay consistent with how PyOPIA itself loads pipeline steps. Real unit tests
+    (tests/test_docker_client.py) resolve stdlib classes rather than PyOPIA ones, so they
+    don't need PyOPIA installed; its source is embedded verbatim into the Docker-side
+    scripts below via `inspect.getsource`, so what's tested is what runs.
+    """
+    classname = pipeline_class.rsplit(".", 1)[-1]
+    modulename = pipeline_class.rsplit(".", 1)[0]
+    return getattr(importlib.import_module(modulename), classname)
+
+
 def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
     """Pull {param_name: description} out of a numpydoc-style docstring's "Parameters" section.
 
@@ -470,6 +487,8 @@ def docstring_summary(doc: str | None) -> str:
 _INTROSPECT_STEPS_SCRIPT = f"""
 import importlib, inspect, json, re, sys, tomllib
 
+{inspect.getsource(resolve_pipeline_class)}
+
 {inspect.getsource(parse_numpydoc_params)}
 
 {inspect.getsource(docstring_summary)}
@@ -490,9 +509,7 @@ for step_name, step in (config.get("steps") or {{}}).items():
     if not pipeline_class:
         continue
     try:
-        classname = pipeline_class.rsplit(".", 1)[-1]
-        modulename = pipeline_class.rsplit(".", 1)[0]
-        cls = getattr(importlib.import_module(modulename), classname)
+        cls = resolve_pipeline_class(pipeline_class)
         doc = inspect.getdoc(cls)
         descriptions = parse_numpydoc_params(doc)
         summary = docstring_summary(doc)
@@ -551,6 +568,162 @@ def introspect_config_steps(project_dir: Path, config_filename: str = "config.to
         return {}
 
 
+THUMBNAIL_DIR_NAME = ".pyopia_gui_thumbnails"
+_BROWSER_VIEWABLE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
+
+
+def thumbnail_path(project_dir: Path, raw_path: Path) -> Path:
+    """Where the preview for `raw_path` (a raw file under `project_dir`) lives.
+
+    Already browser-viewable raw files (e.g. UVP's own raw images, which are already
+    .png - pyopia/instrument/uvp.py) are served directly from their real path, no
+    conversion needed. Everything else (silcam .silc, holo .pgm, ...) gets a cached
+    thumbnail under THUMBNAIL_DIR_NAME, generated on demand by `generate_thumbnails` -
+    a dedicated, dot-prefixed cache folder, deliberately not PyOPIA's own
+    `images_converted/` name (that's a different, full-resolution output produced by
+    PyOPIA's own `convert-raw-images` command, whose `output_folder.mkdir()` has no
+    `exist_ok=True` - reusing that name risks a real collision).
+    """
+    if raw_path.suffix.lower() in _BROWSER_VIEWABLE_EXTENSIONS:
+        return raw_path
+    return project_dir / THUMBNAIL_DIR_NAME / f"{raw_path.stem}.png"
+
+
+# Runs inside the project's own pinned PyOPIA image - loads each raw file the same way
+# PyOPIA's own `convert-raw-images` CLI command does (steps.load.pipeline_class, called
+# once per file) and lets matplotlib's imsave() handle the per-instrument-type array
+# normalization (uint8 RGB for silcam, float grayscale for holo, ...) rather than
+# hand-rolling that per format. One Docker call converts a whole batch, not one call per
+# image - confirmed by testing that container startup, not the actual conversion, is what
+# dominates a single call's cost. Prints a result line after *each* image (not just a
+# running count, and not just a final summary at the end) so the caller can update that
+# one image's own preview as soon as it's ready, rather than only once the whole batch
+# finishes.
+_GENERATE_THUMBNAILS_SCRIPT = f"""
+import importlib, json, os, sys, tomllib
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from PIL import Image
+
+{inspect.getsource(resolve_pipeline_class)}
+
+with open(sys.argv[1], "rb") as f:
+    config = tomllib.load(f)
+load_step = config["steps"]["load"]
+cls = resolve_pipeline_class(load_step["pipeline_class"])
+loader = cls(**{{k: v for k, v in load_step.items() if k != "pipeline_class"}})
+
+requests = json.loads(sys.argv[2])
+for i, (raw_path, out_path) in enumerate(requests):
+    # Write matplotlib's full-res output to a separate temp path, then read *that* and
+    # save the resized thumbnail to out_path - reading and writing the same path in one
+    # step is a real, confirmed source of corrupt/truncated PNGs on some filesystems
+    # (seen over a Docker bind mount), since PIL's Image.open() keeps a lazy reference
+    # to the file it's still open on when the save() back to that same path happens.
+    tmp_path = out_path + ".tmp"
+    error = None
+    try:
+        data = {{"filename": raw_path}}
+        loader(data)
+        # format="png" explicitly - imsave otherwise infers the format from tmp_path's
+        # own extension (".tmp"), which isn't a format it recognises.
+        plt.imsave(tmp_path, data["imraw"], format="png")
+        with Image.open(tmp_path) as img:
+            img.thumbnail((320, 320))
+            img.convert("RGB").save(out_path)
+    except Exception as e:
+        error = f"{{type(e).__name__}}: {{e}}"
+        # Never leave a broken/partial file at out_path on failure - the caller's own
+        # cache check is just "does a file exist here", so a stale leftover would
+        # otherwise be silently treated as a valid cached thumbnail forever after.
+        if os.path.exists(out_path):
+            os.remove(out_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    print(
+        "THUMBNAIL_DONE "
+        + json.dumps({{"done": i + 1, "total": len(requests), "raw_path": raw_path, "error": error}}),
+        flush=True,
+    )
+"""
+
+
+async def generate_thumbnails(
+    project_dir: Path,
+    raw_paths: list[Path],
+    config_filename: str = "config.toml",
+    image: str = PYOPIA_IMAGE,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_image_done: Callable[[Path, str | None], None] | None = None,
+) -> dict[str, str]:
+    """Generate cached preview thumbnails for `raw_paths` (paths under `project_dir`).
+
+    One Docker call for the whole batch (typically a page's worth of images), not one
+    per image - see `_GENERATE_THUMBNAILS_SCRIPT`'s comment for why. Raw files already
+    browser-viewable are skipped, no Docker call needed for them (see `thumbnail_path`).
+    Streamed via `run_streamed` (not a single blocking call): `on_progress(done, total)`
+    and `on_image_done(raw_path, error)` - error is None on success - are both called as
+    each image in the batch finishes, so the caller can update the overall progress bar
+    *and* that specific image's own preview immediately, not only once the whole batch
+    completes.
+
+    Returns {str(raw_path): error_message} for any image that failed to convert - a
+    missing entry means it succeeded and `thumbnail_path(project_dir, raw_path)` now
+    exists on disk. Callers should show the successfully-converted thumbnails and a
+    per-image error for the rest, not fail the whole page over one bad file.
+    """
+    to_convert = [p for p in raw_paths if p.suffix.lower() not in _BROWSER_VIEWABLE_EXTENSIONS]
+    if not to_convert:
+        return {}
+    thumb_dir = project_dir / THUMBNAIL_DIR_NAME
+    thumb_dir.mkdir(exist_ok=True)
+    requests = [
+        (
+            f"{_CONTAINER_WORKDIR}/{p.relative_to(project_dir)}",
+            f"{_CONTAINER_WORKDIR}/{THUMBNAIL_DIR_NAME}/{p.stem}.png",
+        )
+        for p in to_convert
+    ]
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        *_user_args(),
+        "--entrypoint",
+        "python",
+        *_volume_args(project_dir),
+        image,
+        "-c",
+        _GENERATE_THUMBNAILS_SCRIPT,
+        f"{_CONTAINER_WORKDIR}/{config_filename}",
+        json.dumps(requests),
+    ]
+
+    container_to_host = {container_path: p for (container_path, _), p in zip(requests, to_convert, strict=True)}
+    errors: dict[str, str] = {}
+
+    def on_line(line: str) -> None:
+        if not line.startswith("THUMBNAIL_DONE "):
+            return
+        payload = json.loads(line.removeprefix("THUMBNAIL_DONE "))
+        if on_progress:
+            on_progress(payload["done"], payload["total"])
+        host_path = container_to_host.get(payload["raw_path"])
+        if host_path is None:
+            return  # not one of ours - shouldn't happen, but don't crash the callback on it
+        if payload["error"]:
+            errors[str(host_path)] = payload["error"]
+        if on_image_done:
+            on_image_done(host_path, payload["error"])
+
+    exit_code = await run_streamed(command, on_line)
+    if exit_code != 0:
+        return {str(p): errors.get(str(p), "Docker call failed - see the log for details") for p in to_convert}
+    return errors
+
+
 def validate_project(project_dir: Path, config_filename: str = "config.toml") -> str | None:
     """Check that `project_dir` looks like a usable PyOPIA project.
 
@@ -600,6 +773,28 @@ def interpret_failure(output_lines: list[str]) -> str | None:
             "This stalled with no progress for a while - usually a network problem (a stuck "
             "download, either of the Docker image or of the example data, is the most common "
             "cause, especially over VPN or on Windows/WSL2). Check your connection, then try again."
+        )
+    return None
+
+
+_THUMBNAIL_LOAD_MISMATCH_MARKERS = ("could not find a backend",)
+
+
+def interpret_thumbnail_error(error: str) -> str | None:
+    """Give a plain-language explanation for a recognised `generate_thumbnails` failure.
+
+    Returns None if nothing recognisable was found, so the caller can fall back to the
+    raw error - same calibrated-not-blanket pattern as `interpret_failure`. The one
+    pattern recognised so far is a real, confirmed failure mode: the project's
+    `steps.load.pipeline_class` doesn't actually match its raw files' format (e.g. a
+    holo loader pointed at silcam .silc files), which surfaces as an image-library
+    "no backend" error that means nothing to a non-expert user.
+    """
+    if any(marker in error.lower() for marker in _THUMBNAIL_LOAD_MISMATCH_MARKERS):
+        return (
+            "Couldn't read this file with the project's current load settings - this "
+            "usually means the Configuration tab's load step doesn't match this "
+            "project's actual raw file format. Check steps.load.pipeline_class there."
         )
     return None
 

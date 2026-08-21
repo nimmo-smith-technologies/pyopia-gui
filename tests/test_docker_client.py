@@ -8,6 +8,7 @@ import platform
 import subprocess
 import sys
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from urllib.error import URLError
 
@@ -335,6 +336,84 @@ def test_introspect_config_steps_parses_json_from_the_container(
     assert docker_client.introspect_config_steps(tmp_path) == expected
 
 
+def test_resolve_pipeline_class_imports_and_returns_the_named_class() -> None:
+    assert docker_client.resolve_pipeline_class("pathlib.PurePosixPath") is __import__("pathlib").PurePosixPath
+
+
+def test_thumbnail_path_serves_browser_viewable_extensions_directly(tmp_path: Path) -> None:
+    raw_path = tmp_path / "images" / "frame.png"
+
+    assert docker_client.thumbnail_path(tmp_path, raw_path) == raw_path
+
+
+def test_thumbnail_path_uses_cache_folder_for_other_extensions(tmp_path: Path) -> None:
+    raw_path = tmp_path / "images" / "frame.silc"
+
+    result = docker_client.thumbnail_path(tmp_path, raw_path)
+
+    assert result == tmp_path / docker_client.THUMBNAIL_DIR_NAME / "frame.png"
+
+
+async def test_generate_thumbnails_skips_docker_entirely_for_browser_viewable_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(command: list[str], on_line: Callable[[str], None]) -> int:
+        raise AssertionError("should not shell out to Docker for an already-viewable file")
+
+    monkeypatch.setattr(docker_client, "run_streamed", fail_if_called)
+    raw_path = tmp_path / "images" / "frame.png"
+
+    assert await docker_client.generate_thumbnails(tmp_path, [raw_path]) == {}
+
+
+async def test_generate_thumbnails_returns_an_error_per_file_on_docker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        return 1
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    raw_path = tmp_path / "images" / "frame.silc"
+
+    errors = await docker_client.generate_thumbnails(tmp_path, [raw_path])
+
+    assert str(raw_path) in errors
+
+
+async def test_generate_thumbnails_reports_progress_and_maps_container_errors_back_to_host_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ok_path = tmp_path / "images" / "ok.silc"
+    bad_path = tmp_path / "images" / "bad.silc"
+    progress_calls: list[tuple[int, int]] = []
+    done_calls: list[tuple[Path, str | None]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        # The container only ever sees /workspace-relative paths, not the host ones.
+        on_line(
+            "THUMBNAIL_DONE "
+            + json.dumps({"done": 1, "total": 2, "raw_path": "/workspace/images/ok.silc", "error": None})
+        )
+        on_line(
+            "THUMBNAIL_DONE "
+            + json.dumps({"done": 2, "total": 2, "raw_path": "/workspace/images/bad.silc", "error": "OSError: boom"})
+        )
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    errors = await docker_client.generate_thumbnails(
+        tmp_path,
+        [ok_path, bad_path],
+        on_progress=lambda done, total: progress_calls.append((done, total)),
+        on_image_done=lambda raw_path, error: done_calls.append((raw_path, error)),
+    )
+
+    assert errors == {str(bad_path): "OSError: boom"}
+    assert progress_calls == [(1, 2), (2, 2)]
+    assert done_calls == [(ok_path, None), (bad_path, "OSError: boom")]
+
+
 def test_validate_project_missing_config(tmp_path: Path) -> None:
     assert docker_client.validate_project(tmp_path) == f"No config.toml found in {tmp_path}"
 
@@ -424,6 +503,21 @@ def test_interpret_failure_returns_none_for_unrecognised_output() -> None:
     lines = ["PYOPIA VERSION 9.16.23", "LOAD CONFIG", "some unrelated error nobody has seen before"]
 
     assert docker_client.interpret_failure(lines) is None
+
+
+def test_interpret_thumbnail_error_recognises_a_load_class_format_mismatch() -> None:
+    # The real error a mismatched steps.load.pipeline_class produces (e.g. holo's Load
+    # pointed at silcam .silc files) - imageio can't recognise the raw format at all.
+    error = "OSError: Could not find a backend to open `/workspace/images/foo.silc`` with iomode `r`."
+
+    hint = docker_client.interpret_thumbnail_error(error)
+
+    assert hint is not None
+    assert "load step doesn't match" in hint
+
+
+def test_interpret_thumbnail_error_returns_none_for_unrecognised_error() -> None:
+    assert docker_client.interpret_thumbnail_error("PermissionError: something else entirely") is None
 
 
 def test_extract_pyopia_version_reads_real_process_output() -> None:
