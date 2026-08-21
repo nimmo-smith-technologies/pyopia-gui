@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import inspect
 import io
 import json
 import platform
@@ -13,6 +14,16 @@ from urllib.error import URLError
 import pytest
 
 from pyopia_gui import docker_client
+
+
+def test_generate_config_command_mounts_project_dir_and_passes_args(tmp_path: Path) -> None:
+    command = docker_client.generate_config_command(
+        tmp_path, "silcam", "images/*.silc", "model.keras", "processed", "demo"
+    )
+
+    assert command[:3] == ["docker", "run", "--rm"]
+    assert f"{tmp_path}:/workspace" in command
+    assert command[-6:] == ["generate-config", "silcam", "images/*.silc", "model.keras", "processed", "demo"]
 
 
 def test_init_project_command_mounts_parent_dir_and_passes_example_flag(tmp_path: Path) -> None:
@@ -185,6 +196,143 @@ def test_read_pinned_version_returns_none_when_docker_fails(tmp_path: Path, monk
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     assert docker_client.read_pinned_version(tmp_path) is None
+
+
+def test_write_config_round_trips_through_read(tmp_path: Path) -> None:
+    original = {"general": {"pixel_size": 24.5}, "steps": {"output": {"output_datafile": "processed/demo"}}}
+
+    docker_client.write_config(tmp_path, original)
+
+    assert docker_client._load_config(tmp_path, "config.toml") == original
+
+
+def test_write_config_overwrites_existing_file(tmp_path: Path) -> None:
+    _write_config(tmp_path, output_datafile="old/path")
+
+    docker_client.write_config(tmp_path, {"steps": {"output": {"output_datafile": "new/path"}}})
+
+    assert docker_client._output_datafile(tmp_path, "config.toml") == "new/path"
+
+
+def test_parse_numpydoc_params_extracts_names_and_descriptions() -> None:
+    doc = """Summary line.
+
+    Parameters
+    ----------
+    threshold : float, optional
+        segmentation threshold, by default 0.98
+    fill_holes : bool
+        fills holes if True
+
+    Returns
+    -------
+    data : Data
+        the result
+    """
+
+    params = docker_client.parse_numpydoc_params(inspect.cleandoc(doc))
+
+    assert params == {
+        "threshold": "segmentation threshold, by default 0.98",
+        "fill_holes": "fills holes if True",
+    }
+
+
+def test_parse_numpydoc_params_returns_empty_for_no_docstring() -> None:
+    assert docker_client.parse_numpydoc_params(None) == {}
+
+
+def test_parse_numpydoc_params_returns_empty_when_no_parameters_section() -> None:
+    doc = """Just a summary, no Parameters section at all.
+
+    Returns
+    -------
+    data : Data
+        the result
+    """
+
+    assert docker_client.parse_numpydoc_params(inspect.cleandoc(doc)) == {}
+
+
+def test_parse_numpydoc_params_stops_at_the_next_section_when_last() -> None:
+    # "Parameters" as the final section (no "Returns" after it) - end should be len(lines),
+    # not crash or swallow trailing unrelated content.
+    doc = """Summary.
+
+    Parameters
+    ----------
+    average_window : int
+        number of images to use
+    """
+
+    assert docker_client.parse_numpydoc_params(inspect.cleandoc(doc)) == {"average_window": "number of images to use"}
+
+
+def test_docstring_summary_stops_at_the_first_blank_line() -> None:
+    doc = """A step that merges holo-specific statistics into output stats.
+
+    Parameters
+    ----------
+    None
+    """
+
+    assert (
+        docker_client.docstring_summary(inspect.cleandoc(doc))
+        == "A step that merges holo-specific statistics into output stats."
+    )
+
+
+def test_docstring_summary_strips_sphinx_cross_reference_markup() -> None:
+    doc = "A class that calls :func:`pyopia.background.correct_im_accurate` internally."
+
+    assert (
+        docker_client.docstring_summary(doc) == "A class that calls pyopia.background.correct_im_accurate internally."
+    )
+
+
+def test_docstring_summary_returns_empty_string_for_no_docstring() -> None:
+    assert docker_client.docstring_summary(None) == ""
+
+
+def test_introspect_config_steps_returns_empty_dict_on_docker_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_config(tmp_path)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, returncode=1, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.introspect_config_steps(tmp_path) == {}
+
+
+def test_introspect_config_steps_returns_empty_dict_on_unparseable_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_config(tmp_path)
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, returncode=0, stdout="not json")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.introspect_config_steps(tmp_path) == {}
+
+
+def test_introspect_config_steps_parses_json_from_the_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_config(tmp_path)
+    expected = {"segmentation": {"pipeline_class": "pyopia.process.Segment", "fields": [{"name": "threshold"}]}}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        assert "--entrypoint" in command
+        return subprocess.CompletedProcess(command, returncode=0, stdout=json.dumps(expected))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.introspect_config_steps(tmp_path) == expected
 
 
 def test_validate_project_missing_config(tmp_path: Path) -> None:

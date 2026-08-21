@@ -21,6 +21,9 @@ dependencies = [
     "numpy>=1.26.0",
     "h5netcdf>=1.3.0",
     "h5py>=3.10.0",
+    # For writing an edited config.toml back to disk on the Configuration tab -
+    # tomllib (stdlib) only reads. Sibling project to tomllib, same minimal scope.
+    "tomli_w>=1.0.0",
 ]
 
 [project.urls]

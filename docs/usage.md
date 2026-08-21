@@ -159,12 +159,16 @@ tabs - each one only usable once it's actually relevant:
 1. **Project** - always available. The **Project folder** field is the folder
    pyopia-gui will create an example project in, and/or process; it starts out
    pointing at a ready-made example location. Click **Browse…** to pick a different
-   folder, or type a path directly. **1. Create example project** downloads a small
+   folder, or type a path directly. **Create example project** downloads a small
    set of example images and a matching configuration file into it.
-2. **Raw data explorer** and 3. **Configuration** - shown but disabled for now
-   ("coming soon") - planned but not built yet.
+2. **Raw data explorer** - shown but disabled for now ("coming soon") - planned but
+   not built yet.
+3. **Configuration** - becomes available once the Project folder field points at a
+   valid PyOPIA project. Lets you view and edit that project's `config.toml` without
+   needing a text editor - see [Editing a project's configuration](#editing-a-projects-configuration)
+   below.
 4. **Process** - becomes available once the Project folder field points at a valid
-   PyOPIA project (a folder with a `config.toml`). **4. Run processing** runs PyOPIA
+   PyOPIA project (a folder with a `config.toml`). **Run processing** runs PyOPIA
    on it, then builds a montage image of the particles found.
 5. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
@@ -183,10 +187,10 @@ element on the page shows a short explanation too.
 
 The quickest way to see pyopia-gui working:
 
-1. Click **1. Create example project**. This downloads some example data - it can
+1. Click **Create example project**. This downloads some example data - it can
    take a little while the first time, since it also needs to download PyOPIA's
    Docker image if you don't already have it.
-2. Switch to the **Process** tab (now enabled) and click **4. Run processing**.
+2. Switch to the **Process** tab (now enabled) and click **Run processing**.
 3. Once processing finishes, pyopia-gui switches to the **Results** tab automatically.
    It shows the exact PyOPIA version that produced the results - read from the
    project's own output, so it's always an accurate record, useful if you need to
@@ -198,11 +202,35 @@ The quickest way to see pyopia-gui working:
 
 Instead of the example project, you can point pyopia-gui at any folder that already
 has a PyOPIA project set up in it (a `config.toml` file, plus your images) - type or
-browse to that folder in the **Project folder** field, then use the **Process** tab.
-Setting up a PyOPIA project from your own data currently needs PyOPIA's own
-command-line tools (see [PyOPIA's documentation](https://pyopia.readthedocs.io)); an
-in-app way to do this is planned (see the **Configuration** and **Raw data explorer**
-tabs above).
+browse to that folder in the **Project folder** field, then use the **Configuration**
+tab to review/adjust its settings and the **Process** tab to run it. Getting your own
+raw images into a project folder in the first place currently needs to be done outside
+pyopia-gui (an in-app way to do this is planned - see the **Raw data explorer** tab
+above); once they're there, the **Configuration** tab (below) can generate PyOPIA's own
+default `config.toml` for you rather than needing PyOPIA's command-line tools.
+
+## Editing a project's configuration
+
+The **Configuration** tab shows a project's `config.toml`, grouped into **General**
+settings and one section per processing step:
+
+- **General** - `raw_files` (which images to process), `pixel_size`, and logging
+  settings. **`pixel_size` needs checking, not just trusting** - it depends on your
+  specific instrument and lens setup (holo setups especially have many sub-variants
+  with different values), and pyopia-gui has no way to verify it's correct for your
+  actual hardware.
+- **Processing steps** - one collapsible section per pipeline step (e.g.
+  `segmentation`, `statextract`), each showing its actual parameters with the same
+  descriptions PyOPIA's own documentation gives them - read directly from the exact
+  PyOPIA version this project uses, so they're always accurate for it. If a step's
+  parameters can't be read this way for some reason, its raw values are still shown
+  and editable, just without descriptions.
+
+Click **Save changes** to write your edits back to `config.toml`. **Generate default
+config…** overwrites it entirely with PyOPIA's own bare defaults for a chosen
+instrument type (silcam, holo, or uvp) - useful for starting a new project's config
+from scratch, or resetting a broken one - after a confirmation dialog, since it
+discards any customisation already there.
 
 ## Choosing (and switching) a PyOPIA version
 
@@ -214,7 +242,7 @@ silently switches versions partway through and produces inconsistent results.
 
 To deliberately switch a project to a different version, move or delete its existing
 results (the `...-STATS.nc` file named in `config.toml`'s `output_datafile`) before
-clicking **4. Run processing** again - with no existing results to stay consistent
+clicking **Run processing** again - with no existing results to stay consistent
 with, pyopia-gui asks you to choose a version again.
 
 ## If something goes wrong
@@ -222,9 +250,9 @@ with, pyopia-gui asks you to choose a version again.
 - **A message about the PyOPIA image** - pyopia-gui explains what it thinks went
   wrong (e.g. the image couldn't be downloaded), both as a pop-up message and directly
   in the log panel where it happened.
-- **"This folder already exists"** - shown if you click **1. Create example project**
+- **"This folder already exists"** - shown if you click **Create example project**
   pointing at a folder that's already there. Either pick a different, new folder, or
-  if that folder already has a project in it, just click **4. Run processing**
+  if that folder already has a project in it, just click **Run processing**
   instead.
 - For anything else, the log panel shows PyOPIA's own detailed output, which usually
   explains what happened.

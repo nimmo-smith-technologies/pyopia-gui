@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import inspect
 import json
 import os
 import platform
@@ -13,6 +14,8 @@ from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 from urllib.error import URLError
+
+import tomli_w
 
 # ghcr.io/sintef/pyopia isn't currently publicly pullable
 # (https://github.com/SINTEF/pyopia/issues/424), so this defaults to a mirror we
@@ -210,6 +213,38 @@ def init_project_command(parent_dir: Path, project_name: str, image: str = PYOPI
     ]
 
 
+def generate_config_command(
+    project_dir: Path,
+    instrument: str,
+    raw_files: str,
+    model_path: str,
+    outfolder: str,
+    output_prefix: str,
+    image: str = PYOPIA_IMAGE,
+) -> list[str]:
+    """Build the command to write a fresh default `<instrument>-config.toml` into `project_dir`.
+
+    Writes alongside any existing config, not over it - the caller is responsible for
+    replacing the project's real config file with this output, after confirming with the
+    user (this drops any hand-added keys, e.g. `project_metadata_file`, that `init-project`
+    layers on top of `generate-config`'s own bare output).
+    """
+    return [
+        "docker",
+        "run",
+        "--rm",
+        *_user_args(),
+        *_volume_args(project_dir),
+        image,
+        "generate-config",
+        instrument,
+        raw_files,
+        model_path,
+        outfolder,
+        output_prefix,
+    ]
+
+
 def process_command(project_dir: Path, config_filename: str = "config.toml", image: str = PYOPIA_IMAGE) -> list[str]:
     """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`."""
     return [
@@ -264,6 +299,17 @@ def make_montage_command(project_dir: Path, stats_filename: str, image: str = PY
 def _load_config(project_dir: Path, config_filename: str) -> dict:
     with (project_dir / config_filename).open("rb") as f:
         return tomllib.load(f)
+
+
+def load_config(project_dir: Path, config_filename: str = "config.toml") -> dict:
+    """The project's parsed config.toml as a plain dict - the public counterpart to `write_config`."""
+    return _load_config(project_dir, config_filename)
+
+
+def write_config(project_dir: Path, config: dict, config_filename: str = "config.toml") -> None:
+    """Write `config` back to the project's config file, overwriting whatever's there."""
+    with (project_dir / config_filename).open("wb") as f:
+        tomli_w.dump(config, f)
 
 
 def _output_datafile(project_dir: Path, config_filename: str) -> str:
@@ -356,6 +402,153 @@ def read_pinned_version(project_dir: Path, config_filename: str = "config.toml")
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
+    """Pull {param_name: description} out of a numpydoc-style docstring's "Parameters" section.
+
+    numpydoc sections look like "Heading\\n----...\\n" - find every such heading, then take
+    the lines between the "Parameters" heading and whichever heading comes next (usually
+    "Returns"). A real, defined top-level function (not just embedded script text) so it has
+    real unit tests (tests/test_docker_client.py) against synthetic docstrings, independent of
+    Docker/PyOPIA being installed at all - its source is embedded verbatim into
+    `_INTROSPECT_STEPS_SCRIPT` below via `inspect.getsource`, so what's tested is what runs.
+    """
+    if not doc:
+        return {}
+    lines = doc.splitlines()
+    headers = [
+        (lines[i].strip(), i)
+        for i in range(len(lines) - 1)
+        if lines[i].strip() and lines[i + 1].strip() and set(lines[i + 1].strip()) == {"-"}
+    ]
+    start = end = None
+    for idx, (name, i) in enumerate(headers):
+        if name == "Parameters":
+            start = i + 2
+            end = headers[idx + 1][1] if idx + 1 < len(headers) else len(lines)
+            break
+    if start is None:
+        return {}
+    params: dict[str, str] = {}
+    current: str | None = None
+    desc: list[str] = []
+    for line in lines[start:end]:
+        if line.strip() and not line[:1].isspace():
+            if current:
+                params[current] = " ".join(desc).strip()
+            current, desc = line.strip().split(":", 1)[0].split()[0], []
+        elif current and line.strip():
+            desc.append(line.strip())
+    if current:
+        params[current] = " ".join(desc).strip()
+    return params
+
+
+def docstring_summary(doc: str | None) -> str:
+    """The introductory paragraph of a numpydoc-style docstring - just the plain-language
+    "what does this step do" text PyOPIA's own class docstrings open with, before any
+    "Required keys"/other detail. Strips Sphinx cross-reference markup (`:class:`x``,
+    `:func:`x``) down to the bare name, since that's meant for rendered docs, not a plain
+    label in the Configuration tab. Same tested-then-embedded pattern as `parse_numpydoc_params`.
+    """
+    if not doc:
+        return ""
+    paragraph: list[str] = []
+    for line in doc.splitlines():
+        if not line.strip():
+            break
+        paragraph.append(line.strip())
+    return re.sub(r":\w+:`([^`]+)`", r"\1", " ".join(paragraph))
+
+
+# Runs inside the project's own pinned PyOPIA image, so the parameter schema it reports
+# always matches the exact version actually processing this project - no local copy of
+# PyOPIA's step classes to keep in sync (unlike vendored_stats.py, see ADR 0007).
+# Everything below `parse_numpydoc_params` has to be stdlib-only: this only has whatever's
+# already installed in PyOPIA's own image to work with, not pyopia-gui's own dependencies.
+_INTROSPECT_STEPS_SCRIPT = f"""
+import importlib, inspect, json, re, sys, tomllib
+
+{inspect.getsource(parse_numpydoc_params)}
+
+{inspect.getsource(docstring_summary)}
+
+def jsonable(value):
+    try:
+        json.dumps(value)
+    except TypeError:
+        return str(value)
+    return value
+
+with open(sys.argv[1], "rb") as f:
+    config = tomllib.load(f)
+
+result = {{}}
+for step_name, step in (config.get("steps") or {{}}).items():
+    pipeline_class = step.get("pipeline_class") if isinstance(step, dict) else None
+    if not pipeline_class:
+        continue
+    try:
+        classname = pipeline_class.rsplit(".", 1)[-1]
+        modulename = pipeline_class.rsplit(".", 1)[0]
+        cls = getattr(importlib.import_module(modulename), classname)
+        doc = inspect.getdoc(cls)
+        descriptions = parse_numpydoc_params(doc)
+        summary = docstring_summary(doc)
+        fields = []
+        for name, param in inspect.signature(cls.__init__).parameters.items():
+            if name == "self" or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+            has_default = param.default is not inspect.Parameter.empty
+            fields.append({{
+                "name": name,
+                "current_value": jsonable(step.get(name)),
+                "has_default": has_default,
+                "default": jsonable(param.default) if has_default else None,
+                "description": descriptions.get(name, ""),
+            }})
+        result[step_name] = {{"pipeline_class": pipeline_class, "summary": summary, "fields": fields}}
+    except Exception as e:
+        result[step_name] = {{"pipeline_class": pipeline_class, "error": f"{{type(e).__name__}}: {{e}}"}}
+
+print(json.dumps(result))
+"""
+
+
+def introspect_config_steps(project_dir: Path, config_filename: str = "config.toml", image: str = PYOPIA_IMAGE) -> dict:
+    """Per-step parameter schema for `config_filename`, introspected from the pinned PyOPIA image.
+
+    One `docker run` for the whole config, not one per step - each step's `pipeline_class`
+    is imported and inspected (`inspect.signature` + its own docstring) inside the container,
+    so the fields/descriptions shown always match the exact PyOPIA version this project uses.
+    A step whose class can't be imported or introspected gets {"error": ...} instead of
+    {"fields": ...} - callers should fall back to bare key/value editing for that step alone,
+    not fail the whole tab (see refresh_results()'s _STATS_READ_ERRORS handling for the same
+    per-item-fallback pattern).
+    """
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "python",
+        *_volume_args(project_dir),
+        image,
+        "-c",
+        _INTROSPECT_STEPS_SCRIPT,
+        f"{_CONTAINER_WORKDIR}/{config_filename}",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=60, text=True, **_no_console_kwargs())
+    except (subprocess.TimeoutExpired, OSError):
+        return {}
+    if result.returncode != 0:
+        return {}
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        return {}
 
 
 def validate_project(project_dir: Path, config_filename: str = "config.toml") -> str | None:

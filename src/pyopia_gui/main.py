@@ -6,6 +6,7 @@ import tomllib
 import webbrowser
 from pathlib import Path
 
+import tomli_w
 from nicegui import background_tasks, ui
 from nicegui import run as nicegui_run
 
@@ -22,6 +23,74 @@ THIRD_PARTY_LICENSES_URL = f"{REPO_URL}/blob/main/THIRD_PARTY_LICENSES.md"
 # or a malformed config.toml (TOMLDecodeError/TypeError, matching docker_client's own
 # config-reading error handling).
 _STATS_READ_ERRORS = (KeyError, ValueError, OSError, tomllib.TOMLDecodeError, TypeError)
+
+# The `[general]` config keys the Configuration tab hand-labels itself, rather than
+# introspecting - they're not tied to any pipeline_class (see docker_client's
+# introspect_config_steps), so there's no class docstring to pull a description from.
+_GENERAL_LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
+def _toml_value_from_text(text: str) -> object:
+    """Parse a single TOML value (e.g. `["a", "b"]`, `true`, `12`) typed as free text.
+
+    Reuses TOML's own value grammar (via a throwaway `key = ...` wrapper) rather than
+    hand-rolling a parser, so anything a real config.toml could hold (lists, inline
+    tables, numbers, strings) round-trips the same way it would if hand-edited in a
+    text editor.
+    """
+    return tomllib.loads(f"_ = {text}")["_"]
+
+
+def _text_from_toml_value(value: object) -> str:
+    """The inverse of `_toml_value_from_text` - how a non-scalar value is shown for editing."""
+    return tomli_w.dumps({"_": value}).removeprefix("_ = ").strip()
+
+
+async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[bool, dict[str, str] | None]:
+    """Ask for the instrument type (and confirm-before-overwrite) for a fresh default config.
+
+    Pre-fills from the project's existing config where possible - most projects only need
+    to pick the instrument, not retype paths PyOPIA already knows about. Returns
+    (confirmed, generate_config_command kwargs); kwargs is None if cancelled.
+    """
+    general = config.get("general") if isinstance(config.get("general"), dict) else {}
+    steps = config.get("steps") if isinstance(config.get("steps"), dict) else {}
+    load_class = (steps.get("load") or {}).get("pipeline_class", "") if isinstance(steps.get("load"), dict) else ""
+    default_instrument = next((i for i in ("silcam", "holo", "uvp") if i in load_class), "silcam")
+    classifier_step = steps.get("classifier") if isinstance(steps.get("classifier"), dict) else {}
+
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Generate a default config.toml?").classes("text-lg font-medium")
+        ui.label(
+            "This overwrites the project's current config.toml with PyOPIA's own bare "
+            "defaults for the instrument type chosen below. Any values you've customised - "
+            "including ones added outside PyOPIA's defaults, like metadata/auxiliary-data "
+            "file links - will be lost."
+        ).classes("text-sm text-gray-500")
+        instrument_select = ui.select(["silcam", "holo", "uvp"], value=default_instrument, label="Instrument type")
+        instrument_select.classes("w-full")
+        raw_files_input = ui.input("Raw files pattern", value=general.get("raw_files", "images/*.silc")).classes(
+            "w-full"
+        )
+        model_path_input = ui.input("Classifier model path", value=classifier_step.get("model_path", "")).classes(
+            "w-full"
+        )
+        model_path_input.tooltip("Only used for silcam - leave blank for holo/uvp")
+        outfolder_input = ui.input("Output folder", value="processed").classes("w-full")
+        output_prefix_input = ui.input("Output filename prefix", value=project_dir.name).classes("w-full")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+            ui.button("Generate", on_click=lambda: dialog.submit(True))
+    confirmed = bool(await dialog)
+    if not confirmed:
+        return False, None
+    return True, {
+        "instrument": instrument_select.value,
+        "raw_files": raw_files_input.value,
+        "model_path": model_path_input.value,
+        "outfolder": outfolder_input.value,
+        "output_prefix": output_prefix_input.value,
+    }
 
 
 async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
@@ -223,10 +292,9 @@ def index() -> None:
         results_tab = ui.tab("results", label="5. Results")
     process_tab.disable()
     results_tab.disable()
+    config_tab.disable()
     explorer_tab.disable()
     explorer_tab.tooltip("Coming soon")
-    config_tab.disable()
-    config_tab.tooltip("Coming soon")
 
     with ui.tab_panels(tabs, value="project").classes("w-full"):
         with ui.tab_panel("project"):
@@ -240,7 +308,7 @@ def index() -> None:
                 "Determines where the example project below gets created, and what folder processing "
                 "runs against - point it at your own data any time."
             ).classes("text-sm text-gray-500")
-            create_button = ui.button("1. Create example project")
+            create_button = ui.button("Create example project")
             create_button.tooltip(
                 "Downloads a small example dataset and sets up a ready-to-run PyOPIA project in the folder above"
             )
@@ -249,13 +317,13 @@ def index() -> None:
             ui.label("Raw data explorer - coming soon.").classes("text-sm text-gray-500")
 
         with ui.tab_panel("config"):
-            ui.label("Configuration - coming soon.").classes("text-sm text-gray-500")
+            config_container = ui.column().classes("w-full gap-4")
 
         with ui.tab_panel("process"):
             ui.label("Runs PyOPIA on the project folder above, then builds a montage of the particles found.").classes(
                 "text-sm text-gray-500"
             )
-            run_button = ui.button("4. Run processing")
+            run_button = ui.button("Run processing")
             run_button.tooltip("Runs PyOPIA processing on the folder above")
 
         with ui.tab_panel("results"):
@@ -460,6 +528,164 @@ def index() -> None:
                 # aspect-ratio) - override it inline, which takes precedence over both.
                 ui.echart(chart_options).classes("w-full max-w-2xl aspect-square").style("height: auto")
 
+    async def refresh_config(project_dir: Path) -> None:
+        """(Re)build the Configuration tab's content from the project's current config.toml."""
+        config_container.clear()
+        if docker_client.validate_project(project_dir) is not None:
+            with config_container:
+                ui.label("No valid project selected.").classes("text-sm text-gray-500")
+            return
+
+        try:
+            config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            with config_container:
+                ui.label(f"Couldn't read config.toml: {e}").classes("text-sm text-red")
+            return
+        if config is None:
+            return  # io_bound cancellation guard, same reasoning as refresh_results()
+
+        with config_container:
+            general = config.get("general") if isinstance(config.get("general"), dict) else {}
+
+            async def generate_default_config() -> None:
+                confirmed, params = await _confirm_generate_config(project_dir, config)
+                if not confirmed or params is None:
+                    return
+                image = await image_for_existing_project(project_dir)
+                set_status("Generating default config…", busy=True)
+                command = docker_client.generate_config_command(project_dir, image=image, **params)
+                exit_code, lines = await run_streamed_to_log(command)
+                if exit_code != 0:
+                    report_failure(lines, "Generating default config failed")
+                    return
+                generated_path = project_dir / f"{params['instrument']}-config.toml"
+                generated_path.replace(project_dir / "config.toml")
+                set_status("Default config generated", busy=False)
+                ui.notify("Default config generated", type="positive")
+                await refresh_config(project_dir)
+
+            with ui.row().classes("w-full justify-between items-center"):
+                ui.label("General").classes("text-lg font-medium")
+                generate_button = ui.button("Generate default config…", on_click=generate_default_config)
+                generate_button.tooltip(
+                    "Overwrite this project's config.toml with PyOPIA's own bare defaults for a chosen instrument type"
+                )
+
+            raw_files_input = ui.input("raw_files", value=general.get("raw_files", "")).classes("w-full")
+            pixel_size_input = ui.number("pixel_size (µm/pixel)", value=general.get("pixel_size")).classes("w-full")
+            ui.label(
+                "⚠ Verify this matches your actual instrument/lens setup - pixel size varies per "
+                "physical instrument (holo setups especially have many sub-variants) and isn't "
+                "something pyopia-gui can check for you."
+            ).classes("text-xs text-orange-600 -mt-3")
+            log_level_select = ui.select(_GENERAL_LOG_LEVELS, value=general.get("log_level", "INFO"), label="log_level")
+            log_level_select.classes("w-full")
+            log_file_input = ui.input("log_file", value=general.get("log_file") or "").classes("w-full")
+            log_file_input.tooltip("Leave blank to log to the console instead of a file")
+
+            ui.separator()
+
+            with ui.row().classes("items-center gap-2"):
+                ui.label("Processing steps").classes("text-lg font-medium")
+                steps_spinner = ui.spinner(size="sm")
+            steps_column = ui.column().classes("w-full gap-2")
+
+            # name -> (input element, the current value's Python type - bool/int/float/str,
+            # or "raw" for a list/dict/etc shown as TOML-literal text) - kept per-step so
+            # save_changes() knows how to read each field back without re-guessing its type.
+            step_inputs: dict[str, dict[str, tuple[ui.element, object]]] = {}
+
+            steps = config.get("steps") if isinstance(config.get("steps"), dict) else {}
+
+            async def load_steps() -> None:
+                schema = await nicegui_run.io_bound(docker_client.introspect_config_steps, project_dir)
+                steps_spinner.visible = False
+                with steps_column:
+                    for step_name, step in steps.items():
+                        if not isinstance(step, dict) or "pipeline_class" not in step:
+                            continue
+                        info = schema.get(step_name, {})
+                        with ui.expansion(step_name, caption=step["pipeline_class"]).classes("w-full border rounded"):
+                            if info.get("summary"):
+                                ui.label(info["summary"]).classes("text-sm text-gray-600")
+                            fields = step_inputs.setdefault(step_name, {})
+                            if "fields" in info:
+                                if not info["fields"]:
+                                    ui.label("No configurable options for this step.").classes("text-xs text-gray-500")
+                                for field in info["fields"]:
+                                    name = field["name"]
+                                    current = field["current_value"]
+                                    value = current if current is not None else field["default"]
+                                    with ui.column().classes("w-full gap-0"):
+                                        if isinstance(value, bool):
+                                            element = ui.checkbox(name, value=value)
+                                        elif isinstance(value, int | float):
+                                            element = ui.number(name, value=value).classes("w-full")
+                                        elif isinstance(value, str) or value is None:
+                                            element = ui.input(name, value=value or "").classes("w-full")
+                                        else:
+                                            element = ui.input(name, value=_text_from_toml_value(value)).classes(
+                                                "w-full"
+                                            )
+                                            value = "raw"
+                                        if field["description"]:
+                                            ui.label(field["description"]).classes("text-xs text-gray-500")
+                                    fields[name] = (element, type(value) if value != "raw" else "raw")
+                            else:
+                                # Introspection failed for this step - fall back to bare
+                                # key/value text editing rather than blocking the whole tab.
+                                if "error" in info:
+                                    ui.label(f"Couldn't introspect this step: {info['error']}").classes(
+                                        "text-xs text-red"
+                                    )
+                                for name, current in step.items():
+                                    if name == "pipeline_class":
+                                        continue
+                                    shown = current if isinstance(current, str) else _text_from_toml_value(current)
+                                    fields[name] = (ui.input(name, value=shown).classes("w-full"), "raw")
+
+            background_tasks.create(load_steps(), name="config-introspect")
+
+            async def save_changes() -> None:
+                updated: dict = {
+                    "general": {
+                        "raw_files": raw_files_input.value,
+                        "pixel_size": pixel_size_input.value,
+                        "log_level": log_level_select.value,
+                    },
+                    "steps": {},
+                }
+                if log_file_input.value:
+                    updated["general"]["log_file"] = log_file_input.value
+                for step_name, fields in step_inputs.items():
+                    step_config = {"pipeline_class": steps[step_name]["pipeline_class"]}
+                    for name, (element, kind) in fields.items():
+                        if kind is bool:
+                            step_config[name] = element.value
+                        elif kind is int:
+                            step_config[name] = int(element.value) if element.value is not None else None
+                        elif kind is float:
+                            step_config[name] = float(element.value) if element.value is not None else None
+                        elif kind == "raw":
+                            try:
+                                step_config[name] = _toml_value_from_text(element.value)
+                            except tomllib.TOMLDecodeError as e:
+                                ui.notify(f"{step_name}.{name}: {e}", type="negative")
+                                return
+                        else:
+                            step_config[name] = element.value
+                    updated["steps"][step_name] = step_config
+                try:
+                    await nicegui_run.io_bound(docker_client.write_config, project_dir, updated)
+                except OSError as e:
+                    ui.notify(f"Couldn't save config.toml: {e}", type="negative")
+                    return
+                ui.notify("Configuration saved", type="positive")
+                await refresh_project_state()
+
+            ui.button("Save changes", on_click=save_changes).classes("mt-2")
+
     async def refresh_project_state() -> None:
         """Update tab availability for the current project folder, and jump to Results
         if it already has output - opening an already-processed project should show
@@ -468,8 +694,11 @@ def index() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         if docker_client.validate_project(project_dir) is None:
             process_tab.enable()
+            config_tab.enable()
+            await refresh_config(project_dir)
         else:
             process_tab.disable()
+            config_tab.disable()
 
         try:
             has_results = (project_dir / docker_client.stats_filename(project_dir)).is_file()

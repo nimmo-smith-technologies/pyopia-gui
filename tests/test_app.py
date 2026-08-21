@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,6 +34,16 @@ async def _click_through_pinned_version_dialog_if_shown(user: User) -> None:
     if buttons:
         UserInteraction(user, buttons, target=None).click()
         await asyncio.sleep(0.2)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_docker_introspection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any test that sets a valid project folder triggers refresh_config()'s background
+    Configuration-tab introspection call - default it to a no-op so tests that don't care
+    about Configuration-tab content don't slow down or hit a real Docker daemon. Tests that
+    do care override this explicitly with their own monkeypatch.setattr(...) call.
+    """
+    monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
 
 
 async def test_index_page_loads(user: User) -> None:
@@ -108,23 +119,22 @@ async def test_main_screen_shows_expected_elements_when_docker_available(
 
     await user.open("/")
 
-    await user.should_see("1. Create example project")
-    await user.should_see("4. Run processing")
+    await user.should_see("Create example project")
+    await user.should_see("Run processing")
     await user.should_see("Ready")
     await user.should_see("Browse")
 
 
-async def test_future_tabs_are_disabled(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_raw_data_explorer_tab_is_disabled(user: User, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
 
     await user.open("/")
 
-    for label in ("2. Raw data explorer", "3. Configuration"):
-        tab = user.find(kind=ui.tab, content=label).elements.pop()
-        assert not tab.enabled
+    tab = user.find(kind=ui.tab, content="2. Raw data explorer").elements.pop()
+    assert not tab.enabled
 
 
-async def test_process_and_results_tabs_start_disabled_for_invalid_default_project(
+async def test_process_results_and_config_tabs_start_disabled_for_invalid_default_project(
     user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The real default project folder may or may not exist on the machine running the
@@ -138,11 +148,13 @@ async def test_process_and_results_tabs_start_disabled_for_invalid_default_proje
 
     process_tab = user.find(kind=ui.tab, content="4. Process").elements.pop()
     results_tab = user.find(kind=ui.tab, content="5. Results").elements.pop()
+    config_tab = user.find(kind=ui.tab, content="3. Configuration").elements.pop()
     assert not process_tab.enabled
     assert not results_tab.enabled
+    assert not config_tab.enabled
 
 
-async def test_process_tab_enables_for_a_valid_project(
+async def test_process_and_config_tabs_enable_for_a_valid_project(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
@@ -155,7 +167,9 @@ async def test_process_tab_enables_for_a_valid_project(
 
     process_tab = user.find(kind=ui.tab, content="4. Process").elements.pop()
     results_tab = user.find(kind=ui.tab, content="5. Results").elements.pop()
+    config_tab = user.find(kind=ui.tab, content="3. Configuration").elements.pop()
     assert process_tab.enabled
+    assert config_tab.enabled
     assert not results_tab.enabled  # no stats file yet
 
 
@@ -217,7 +231,7 @@ async def test_create_warns_if_folder_already_exists(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="1. Create example project").click()
+    user.find(kind=ui.button, content="Create example project").click()
 
     await user.should_see("already exists")
 
@@ -233,7 +247,7 @@ async def test_create_shows_confirmation_dialog_with_resolved_path(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(target)
 
-    user.find(kind=ui.button, content="1. Create example project").click()
+    user.find(kind=ui.button, content="Create example project").click()
 
     await user.should_see("Create a new PyOPIA project here?")
     await user.should_see(str(target.resolve()))
@@ -257,7 +271,7 @@ async def test_create_cancelled_does_not_run_docker(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(target)
 
-    user.find(kind=ui.button, content="1. Create example project").click()
+    user.find(kind=ui.button, content="Create example project").click()
     await user.should_see("Create a new PyOPIA project here?")
 
     user.find(kind=ui.button, content="Cancel").click()
@@ -281,7 +295,7 @@ async def test_create_confirmed_runs_docker(user: User, monkeypatch: pytest.Monk
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(target)
 
-    user.find(kind=ui.button, content="1. Create example project").click()
+    user.find(kind=ui.button, content="Create example project").click()
     await user.should_see("Create a new PyOPIA project here?")
 
     user.find(kind=ui.button, content="Create here").click()
@@ -305,10 +319,10 @@ async def test_create_lets_user_choose_pyopia_version(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(target)
 
-    user.find(kind=ui.button, content="1. Create example project").click()
+    user.find(kind=ui.button, content="Create example project").click()
     await user.should_see("Create a new PyOPIA project here?")
 
-    version_select = user.find(ui.select).elements.pop()
+    version_select = user.find(kind=ui.select, content="PyOPIA version").elements.pop()
     version_select.set_value("9.16.20")
     user.find(kind=ui.button, content="Create here").click()
     await asyncio.sleep(0.2)  # let on_create()'s coroutine run the (mocked) docker command
@@ -345,14 +359,14 @@ async def test_running_right_after_create_does_not_ask_for_version_again(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(target)
 
-    user.find(kind=ui.button, content="1. Create example project").click()
+    user.find(kind=ui.button, content="Create example project").click()
     await user.should_see("Create a new PyOPIA project here?")
-    version_select = user.find(ui.select).elements.pop()
+    version_select = user.find(kind=ui.select, content="PyOPIA version").elements.pop()
     version_select.set_value("9.16.20")
     user.find(kind=ui.button, content="Create here").click()
     await user.should_see("Example project created")
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await asyncio.sleep(0.2)
 
     await user.should_not_see("Choose a PyOPIA version")
@@ -378,7 +392,7 @@ async def test_run_shows_friendly_message_in_log_on_image_pull_failure(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
 
     await user.should_see("Couldn't pull the PyOPIA image")
 
@@ -415,7 +429,7 @@ async def test_run_shows_pyopia_version_after_successful_processing(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await _click_through_pinned_version_dialog_if_shown(user)
 
     await user.should_see("processed with PyOPIA v9.16.23")
@@ -448,12 +462,12 @@ async def test_rerun_clears_stale_results_from_previous_run(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await _click_through_pinned_version_dialog_if_shown(user)
     await user.should_see("processed with PyOPIA v9.16.23")
     await user.should_see("Done")
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await _click_through_pinned_version_dialog_if_shown(user)
     await asyncio.sleep(0.2)  # let on_run() clear the Results tab before the second run fails
 
@@ -483,7 +497,7 @@ async def test_successful_rerun_removes_stale_montage(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await _click_through_pinned_version_dialog_if_shown(user)
     await user.should_see("Done")
 
@@ -533,7 +547,7 @@ async def test_run_reuses_pinned_version_from_existing_output(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
 
     await user.should_see("This will run PyOPIA v9.16.15")
     await user.should_see("A newer version (v9.16.23) is available")
@@ -563,7 +577,7 @@ async def test_run_cancelled_pinned_version_confirmation_does_not_run_docker(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await user.should_see("This will run PyOPIA v9.16.15")
 
     user.find(kind=ui.button, content="Cancel").click()
@@ -591,10 +605,10 @@ async def test_run_prompts_for_version_when_project_has_no_pin_yet(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await user.should_see("Choose a PyOPIA version")
 
-    version_select = user.find(ui.select).elements.pop()
+    version_select = user.find(kind=ui.select, content="PyOPIA version").elements.pop()
     version_select.set_value("9.16.15")
     user.find(kind=ui.button, content="Use this version").click()
     await asyncio.sleep(0.2)
@@ -621,10 +635,146 @@ async def test_run_cancelled_version_choice_does_not_run_docker(
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    user.find(kind=ui.button, content="4. Run processing").click()
+    user.find(kind=ui.button, content="Run processing").click()
     await user.should_see("Choose a PyOPIA version")
 
     user.find(kind=ui.button, content="Cancel").click()
     await asyncio.sleep(0.2)
 
     assert calls == []
+
+
+def _write_config_with_a_step(tmp_path: Path) -> None:
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'
+        '[steps.segmentation]\npipeline_class = "pyopia.process.Segment"\nthreshold = 0.85\n\n'
+        '[steps.output]\noutput_datafile = "processed/demo"\n'
+    )
+
+
+async def test_config_tab_shows_general_fields_for_a_valid_project(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+    _write_config_with_a_step(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("images/*.silc")
+    await user.should_see("Verify this matches your actual instrument")
+
+
+async def test_config_tab_shows_introspected_step_fields_with_descriptions(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {
+            "segmentation": {
+                "pipeline_class": "pyopia.process.Segment",
+                "fields": [
+                    {
+                        "name": "threshold",
+                        "current_value": 0.85,
+                        "has_default": True,
+                        "default": 0.98,
+                        "description": "threshold for segmentation",
+                    }
+                ],
+            }
+        },
+    )
+    _write_config_with_a_step(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("segmentation")
+    await user.should_see("threshold for segmentation")
+
+
+async def test_config_tab_falls_back_to_bare_fields_when_step_introspection_fails(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {
+            "segmentation": {"pipeline_class": "pyopia.process.Segment", "error": "ModuleNotFoundError: boom"}
+        },
+    )
+    _write_config_with_a_step(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("Couldn't introspect this step")
+    # Falls back to the raw key from config.toml itself, not just an error message.
+    await user.should_see("threshold")
+
+
+async def test_save_changes_writes_edited_value_to_config_toml(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {
+            "segmentation": {
+                "pipeline_class": "pyopia.process.Segment",
+                "fields": [
+                    {
+                        "name": "threshold",
+                        "current_value": 0.85,
+                        "has_default": True,
+                        "default": 0.98,
+                        "description": "",
+                    }
+                ],
+            }
+        },
+    )
+    _write_config_with_a_step(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("threshold")
+
+    threshold_input = user.find(kind=ui.number, content="threshold").elements.pop()
+    threshold_input.value = 0.5
+
+    user.find(kind=ui.button, content="Save changes").click()
+    await user.should_see("Configuration saved")
+
+    saved = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert saved["steps"]["segmentation"]["threshold"] == 0.5
+    assert saved["steps"]["segmentation"]["pipeline_class"] == "pyopia.process.Segment"
+
+
+async def test_generate_default_config_button_shows_confirm_dialog(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: None)
+    _write_config_with_a_step(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("images/*.silc")
+
+    user.find(kind=ui.button, content="Generate default config").click()
+
+    await user.should_see("Generate a default config.toml?")
+    await user.should_see("PyOPIA's own bare")
