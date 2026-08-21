@@ -681,7 +681,10 @@ async def generate_thumbnails(
     thumb_dir.mkdir(exist_ok=True)
     requests = [
         (
-            f"{_CONTAINER_WORKDIR}/{p.relative_to(project_dir)}",
+            # .as_posix(), not str() - on Windows, relative_to() returns backslash-separated
+            # components, which would otherwise land in a Linux container path unchanged
+            # and never match the real /workspace/... path the container itself reports back.
+            f"{_CONTAINER_WORKDIR}/{p.relative_to(project_dir).as_posix()}",
             f"{_CONTAINER_WORKDIR}/{THUMBNAIL_DIR_NAME}/{p.stem}.png",
         )
         for p in to_convert
