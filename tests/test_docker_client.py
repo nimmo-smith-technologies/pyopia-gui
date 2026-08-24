@@ -102,6 +102,34 @@ def test_stats_filename_reads_output_datafile_from_config(tmp_path: Path) -> Non
     assert docker_client.stats_filename(tmp_path) == "processed/demo-STATS.nc"
 
 
+def test_output_directory_reads_output_datafile_directory(tmp_path: Path) -> None:
+    _write_config(tmp_path, output_datafile="processed/demo")
+
+    assert docker_client.output_directory(tmp_path) == tmp_path / "processed"
+
+
+def test_output_directory_handles_output_datafile_with_no_subfolder(tmp_path: Path) -> None:
+    _write_config(tmp_path, output_datafile="demo")
+
+    assert docker_client.output_directory(tmp_path) == tmp_path / "."
+
+
+def test_output_uses_append_defaults_to_true_when_key_unset(tmp_path: Path) -> None:
+    _write_config(tmp_path)
+
+    assert docker_client.output_uses_append(tmp_path) is True
+
+
+def test_output_uses_append_reads_the_configured_value(tmp_path: Path) -> None:
+    tmp_path.joinpath("config.toml").write_text('[steps.output]\noutput_datafile = "processed/demo"\nappend = false\n')
+
+    assert docker_client.output_uses_append(tmp_path) is False
+
+
+def test_output_uses_append_defaults_to_true_for_an_invalid_project(tmp_path: Path) -> None:
+    assert docker_client.output_uses_append(tmp_path) is True
+
+
 def test_pixel_size_reads_general_config(tmp_path: Path) -> None:
     (tmp_path / "config.toml").write_text("[general]\npixel_size = 24\n")
 
@@ -215,6 +243,54 @@ def test_write_config_overwrites_existing_file(tmp_path: Path) -> None:
     assert docker_client._output_datafile(tmp_path, "config.toml") == "new/path"
 
 
+def test_set_step_enabled_false_moves_a_step_from_steps_to_disabled() -> None:
+    config = {
+        "steps": {
+            "classifier": {"pipeline_class": "pyopia.classify.Classify", "model_path": ""},
+            "segmentation": {"pipeline_class": "pyopia.process.Segment"},
+        }
+    }
+
+    new_config = docker_client.set_step_enabled(config, "classifier", enabled=False)
+
+    assert new_config["steps"] == {"segmentation": {"pipeline_class": "pyopia.process.Segment"}}
+    assert new_config["steps_disabled"] == {
+        "classifier": {"pipeline_class": "pyopia.classify.Classify", "model_path": ""}
+    }
+
+
+def test_set_step_enabled_true_moves_a_step_from_disabled_to_steps() -> None:
+    config = {
+        "steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment"}},
+        "steps_disabled": {"classifier": {"pipeline_class": "pyopia.classify.Classify", "model_path": "m.keras"}},
+    }
+
+    new_config = docker_client.set_step_enabled(config, "classifier", enabled=True)
+
+    assert new_config["steps"] == {
+        "segmentation": {"pipeline_class": "pyopia.process.Segment"},
+        "classifier": {"pipeline_class": "pyopia.classify.Classify", "model_path": "m.keras"},
+    }
+    assert new_config["steps_disabled"] == {}
+
+
+def test_set_step_enabled_is_a_no_op_when_step_is_absent_from_the_source_table() -> None:
+    config = {"steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment"}}}
+
+    new_config = docker_client.set_step_enabled(config, "classifier", enabled=False)
+
+    assert new_config == config
+
+
+def test_set_step_enabled_does_not_mutate_the_input() -> None:
+    config = {"steps": {"classifier": {"pipeline_class": "pyopia.classify.Classify"}}}
+    original = json.loads(json.dumps(config))
+
+    docker_client.set_step_enabled(config, "classifier", enabled=False)
+
+    assert config == original
+
+
 def test_parse_numpydoc_params_extracts_names_and_descriptions() -> None:
     doc = """Summary line.
 
@@ -325,7 +401,14 @@ def test_introspect_config_steps_parses_json_from_the_container(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_config(tmp_path)
-    expected = {"segmentation": {"pipeline_class": "pyopia.process.Segment", "fields": [{"name": "threshold"}]}}
+    # {"steps": {...}, "steps_disabled": {...}} - both the active and disabled tables
+    # are introspected by the container script, under separate keys.
+    expected = {
+        "steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment", "fields": [{"name": "threshold"}]}},
+        "steps_disabled": {
+            "classifier": {"pipeline_class": "pyopia.classify.Classify", "fields": [{"name": "model_path"}]}
+        },
+    }
 
     def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
         assert "--entrypoint" in command
@@ -518,6 +601,393 @@ def test_interpret_thumbnail_error_recognises_a_load_class_format_mismatch() -> 
 
 def test_interpret_thumbnail_error_returns_none_for_unrecognised_error() -> None:
     assert docker_client.interpret_thumbnail_error("PermissionError: something else entirely") is None
+
+
+def test_required_background_context_reads_average_window() -> None:
+    config = {"steps": {"bg": {"pipeline_class": "pyopia.background.CorrectBackgroundAccurate", "average_window": 5}}}
+
+    assert docker_client.required_background_context(config) == 5
+
+
+def test_required_background_context_defaults_to_one_when_average_window_unset() -> None:
+    config = {"steps": {"bg": {"pipeline_class": "pyopia.background.CorrectBackgroundAccurate"}}}
+
+    assert docker_client.required_background_context(config) == 1
+
+
+def test_required_background_context_is_zero_when_no_background_step_configured() -> None:
+    config = {"steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment"}}}
+
+    assert docker_client.required_background_context(config) == 0
+
+
+def _paths(*names: str) -> list[Path]:
+    return [Path(name) for name in names]
+
+
+def test_select_background_context_prefers_preceding_files() -> None:
+    raw_paths = _paths("a", "b", "c", "d", "e", "f")
+
+    context = docker_client.select_background_context(raw_paths, Path("e"), 3)
+
+    assert context == _paths("b", "c", "d")
+
+
+def test_select_background_context_falls_back_to_following_files_near_the_start() -> None:
+    # Only "a" precedes "b" - not enough on its own for a window of 3, so it fills
+    # the rest from the nearest files *after* the sample instead (not symmetric).
+    raw_paths = _paths("a", "b", "c", "d", "e")
+
+    context = docker_client.select_background_context(raw_paths, Path("b"), 3)
+
+    assert context == _paths("a", "c", "d")
+
+
+def test_select_background_context_uses_only_following_files_for_the_very_first_sample() -> None:
+    raw_paths = _paths("a", "b", "c", "d")
+
+    context = docker_client.select_background_context(raw_paths, Path("a"), 3)
+
+    assert context == _paths("b", "c", "d")
+
+
+def test_select_background_context_returns_empty_when_dataset_too_small() -> None:
+    raw_paths = _paths("a", "b", "c")
+
+    context = docker_client.select_background_context(raw_paths, Path("a"), 3)
+
+    assert context == []
+
+
+def test_select_background_context_returns_empty_when_sample_not_in_raw_paths() -> None:
+    raw_paths = _paths("a", "b", "c", "d", "e")
+
+    context = docker_client.select_background_context(raw_paths, Path("not-there"), 2)
+
+    assert context == []
+
+
+def test_substitute_background_steps_replaces_a_configured_background_step() -> None:
+    config = {
+        "steps": {
+            # Deliberately not named "correctbackground" - matching must go by
+            # pipeline_class, not by the step's dict key name.
+            "bg": {"pipeline_class": "pyopia.background.CorrectBackgroundAccurate", "average_window": 10}
+        }
+    }
+
+    new_config, skipped = docker_client._substitute_background_steps(config)
+
+    assert skipped is True
+    assert new_config["steps"]["bg"] == {"pipeline_class": "pyopia.background.CorrectBackgroundNone"}
+
+
+def test_substitute_background_steps_leaves_config_unchanged_when_none_configured() -> None:
+    # Shaped like the silcam example config - no background step at all.
+    config = {"steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment", "threshold": 0.98}}}
+
+    new_config, skipped = docker_client._substitute_background_steps(config)
+
+    assert skipped is False
+    assert new_config == config
+
+
+def test_substitute_background_steps_matches_by_pipeline_class_not_step_name() -> None:
+    # A step literally named "correctbackground" whose pipeline_class isn't actually
+    # under pyopia.background.* should be left alone - name alone isn't a signal.
+    config = {"steps": {"correctbackground": {"pipeline_class": "pyopia.process.Segment"}}}
+
+    new_config, skipped = docker_client._substitute_background_steps(config)
+
+    assert skipped is False
+    assert new_config == config
+
+
+def test_substitute_background_steps_does_not_mutate_the_input(tmp_path: Path) -> None:
+    config = {"steps": {"bg": {"pipeline_class": "pyopia.background.CorrectBackgroundAccurate"}}}
+    original = json.loads(json.dumps(config))
+
+    docker_client._substitute_background_steps(config)
+
+    assert config == original
+
+
+def test_remove_output_steps_drops_a_configured_output_step() -> None:
+    config = {
+        "steps": {
+            "segmentation": {"pipeline_class": "pyopia.process.Segment", "threshold": 0.5},
+            "output": {"pipeline_class": "pyopia.io.StatsToDisc", "output_datafile": "processed/demo"},
+        }
+    }
+
+    new_config = docker_client._remove_output_steps(config)
+
+    assert new_config["steps"] == {"segmentation": {"pipeline_class": "pyopia.process.Segment", "threshold": 0.5}}
+
+
+def test_remove_output_steps_leaves_config_unchanged_when_none_configured() -> None:
+    config = {"steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment"}}}
+
+    new_config = docker_client._remove_output_steps(config)
+
+    assert new_config == config
+
+
+def test_remove_output_steps_matches_by_pipeline_class_not_step_name() -> None:
+    # A step literally named "output" whose pipeline_class isn't actually under
+    # pyopia.io.* should be left alone - name alone isn't a signal.
+    config = {"steps": {"output": {"pipeline_class": "pyopia.process.Segment"}}}
+
+    new_config = docker_client._remove_output_steps(config)
+
+    assert new_config == config
+
+
+def test_remove_output_steps_does_not_mutate_the_input() -> None:
+    config = {"steps": {"output": {"pipeline_class": "pyopia.io.StatsToDisc"}}}
+    original = json.loads(json.dumps(config))
+
+    docker_client._remove_output_steps(config)
+
+    assert config == original
+
+
+async def test_preview_pipeline_returns_parsed_result_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {
+        "ok": True,
+        "particle_count": 3,
+        "d50_microns": 42.5,
+        "saturation": 12.0,
+        "background_step_skipped": True,
+        "run_id": "abc123ab",
+        "overlay_filename": "overlay.png",
+        "slice_filenames": None,
+        "z_values": None,
+    }
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+
+    result = await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path)
+
+    assert result == {
+        "ok": True,
+        "particle_count": 3,
+        "d50_microns": 42.5,
+        "saturation": 12.0,
+        "background_step_skipped": True,
+        "overlay_path": tmp_path / docker_client.PREVIEW_DIR_NAME / "abc123ab" / "overlay.png",
+        "slice_paths": None,
+        "z_values": None,
+    }
+
+
+async def test_preview_pipeline_forwards_progress_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "ok": True,
+        "particle_count": 0,
+        "d50_microns": None,
+        "saturation": None,
+        "background_step_skipped": False,
+        "run_id": "run00001",
+        "overlay_filename": None,
+        "slice_filenames": None,
+        "z_values": None,
+    }
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        on_line("PREVIEW_PROGRESS Running pipeline step: segmentation")
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+    progress_messages: list[str] = []
+
+    await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path, on_progress=progress_messages.append)
+
+    assert progress_messages == ["Running pipeline step: segmentation"]
+
+
+async def test_preview_pipeline_resolves_slice_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "ok": True,
+        "particle_count": 0,
+        "d50_microns": None,
+        "saturation": None,
+        "background_step_skipped": False,
+        "run_id": "run00001",
+        "overlay_filename": None,
+        "slice_filenames": ["slice-0000.png", "slice-0001.png"],
+        "z_values": [0.0, 0.5],
+    }
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.pgm"
+
+    result = await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path)
+
+    run_dir = tmp_path / docker_client.PREVIEW_DIR_NAME / "run00001"
+    assert result["slice_paths"] == [run_dir / "slice-0000.png", run_dir / "slice-0001.png"]
+    assert result["z_values"] == [0.0, 0.5]
+    assert result["overlay_path"] is None
+
+
+async def test_preview_pipeline_returns_structured_pipeline_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = {"ok": False, "error": "ValueError: threshold must be between 0 and 1"}
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+
+    result = await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path)
+
+    assert result == {"ok": False, "error": "ValueError: threshold must be between 0 and 1"}
+
+
+async def test_preview_pipeline_returns_fallback_error_on_nonzero_returncode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        return 1
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+
+    result = await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path)
+
+    assert result == {"ok": False, "error": "Docker call failed - see the log for details"}
+
+
+async def test_preview_pipeline_returns_fallback_error_on_unparseable_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        on_line("{not valid json")
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+
+    result = await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path)
+
+    assert result == {"ok": False, "error": "Docker call failed - see the log for details"}
+
+
+async def test_preview_pipeline_encodes_config_as_json_argv_and_uses_posix_container_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = {"steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment", "threshold": 0.5}}}
+    captured: dict[str, list[str]] = {}
+    payload = {
+        "ok": True,
+        "particle_count": 0,
+        "d50_microns": None,
+        "saturation": None,
+        "background_step_skipped": False,
+        "run_id": "run00001",
+        "overlay_filename": None,
+        "slice_filenames": None,
+        "z_values": None,
+    }
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        captured["command"] = command
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+
+    await docker_client.preview_pipeline(tmp_path, config, sample_path)
+
+    command = captured["command"]
+    assert json.dumps(config) in command
+    # .as_posix(), not str() - same Windows-backslash fix already applied in
+    # generate_thumbnails, for the same reason (relative_to() returns backslash-
+    # separated components on Windows, which wouldn't match the real container path).
+    assert "/workspace/images/frame.silc" in command
+
+
+async def test_preview_pipeline_encodes_context_paths_as_json_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, list[str]] = {}
+    payload = {
+        "ok": True,
+        "particle_count": 0,
+        "d50_microns": None,
+        "saturation": None,
+        "background_step_skipped": False,
+        "run_id": "run00001",
+        "overlay_filename": None,
+        "slice_filenames": None,
+        "z_values": None,
+    }
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        captured["command"] = command
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "D2.silc"
+    context_paths = [tmp_path / "images" / "D0.silc", tmp_path / "images" / "D1.silc"]
+
+    await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path, context_raw_paths=context_paths)
+
+    command = captured["command"]
+    assert json.dumps(["/workspace/images/D0.silc", "/workspace/images/D1.silc"]) in command
+
+
+async def test_preview_pipeline_passes_no_context_when_none_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, list[str]] = {}
+    payload = {
+        "ok": True,
+        "particle_count": 0,
+        "d50_microns": None,
+        "saturation": None,
+        "background_step_skipped": False,
+        "run_id": "run00001",
+        "overlay_filename": None,
+        "slice_filenames": None,
+        "z_values": None,
+    }
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        captured["command"] = command
+        on_line(json.dumps(payload))
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    sample_path = tmp_path / "images" / "frame.silc"
+
+    await docker_client.preview_pipeline(tmp_path, {"steps": {}}, sample_path)
+
+    assert captured["command"][-1] == "[]"
+
+
+def test_interpret_preview_error_has_no_recognised_patterns_yet() -> None:
+    # Ships as an empty hook (see docker_client.interpret_preview_error's docstring) -
+    # this just pins that behaviour so a future real pattern is added deliberately.
+    assert docker_client.interpret_preview_error("anything at all") is None
 
 
 def test_extract_pyopia_version_reads_real_process_output() -> None:

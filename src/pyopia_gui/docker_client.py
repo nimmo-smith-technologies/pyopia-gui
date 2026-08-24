@@ -67,9 +67,9 @@ def check_docker() -> DockerStatus:
         result = subprocess.run(
             ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True,
-            # Generous on purpose: seen a real case of this reporting NOT_RUNNING
-            # under a 5s timeout on a Windows machine with flaky WSL2 networking,
-            # while Docker Desktop itself said "Engine running" the whole time.
+            # Generous on purpose: a short timeout can misreport NOT_RUNNING on a
+            # Windows machine with flaky WSL2 networking even while Docker Desktop
+            # itself reports "Engine running".
             timeout=15,
             **_no_console_kwargs(),
         )
@@ -313,6 +313,26 @@ def write_config(project_dir: Path, config: dict, config_filename: str = "config
         tomli_w.dump(config, f)
 
 
+def set_step_enabled(config: dict, step_name: str, *, enabled: bool) -> dict:
+    """Move `step_name` between config's `steps` and `steps_disabled` tables.
+
+    PyOPIA's `Pipeline` only ever reads `config["steps"]`, so a step under
+    `steps_disabled` is invisible to a real run while still being kept around
+    for the Configuration tab to show and re-enable later.
+
+    Returns a new dict (doesn't mutate `config`). A no-op copy if `step_name`
+    isn't present in the table it would be moved from.
+    """
+    new_config = json.loads(json.dumps(config))
+    source_key = "steps_disabled" if enabled else "steps"
+    dest_key = "steps" if enabled else "steps_disabled"
+    source = new_config.get(source_key)
+    if not isinstance(source, dict) or step_name not in source:
+        return new_config
+    new_config.setdefault(dest_key, {})[step_name] = source.pop(step_name)
+    return new_config
+
+
 def _output_datafile(project_dir: Path, config_filename: str) -> str:
     """The `steps.output.output_datafile` prefix from the project's config, e.g. "processed/demo"."""
     return _load_config(project_dir, config_filename)["steps"]["output"]["output_datafile"]
@@ -331,6 +351,34 @@ def pixel_size(project_dir: Path, config_filename: str = "config.toml") -> float
 def stats_filename(project_dir: Path, config_filename: str = "config.toml") -> str:
     """The path to the merged STATS.nc file `merge-mfdata` will produce, relative to the project dir."""
     return f"{_output_datafile(project_dir, config_filename)}-STATS.nc"
+
+
+def output_directory(project_dir: Path, config_filename: str = "config.toml") -> Path:
+    """The real folder `steps.output.output_datafile` writes into, e.g. `processed/`
+    for `output_datafile = "processed/demo"` - the same directory `merge_mfdata_command`
+    already computes (`os.path.dirname`), exposed here as a real `Path` for callers that
+    need to act on the folder itself (e.g. clearing stale output before a fresh run).
+    """
+    return project_dir / (os.path.dirname(_output_datafile(project_dir, config_filename)) or ".")
+
+
+def output_uses_append(project_dir: Path, config_filename: str = "config.toml") -> bool:
+    """Whether the project's output step writes directly into one combined -STATS.nc
+    file (`append = true`, `pyopia.io.StatsToDisc`'s own default) rather than one file
+    per raw image (`append = false`).
+
+    `merge-mfdata` is only meaningful in the `append = false` case - with
+    `append = true` there's nothing to merge, and PyOPIA's own `merge-mfdata`
+    raises `ZeroDivisionError` on a folder with no per-image files. Callers
+    should skip the merge step entirely when this returns True.
+    Defaults to True (matching `StatsToDisc.__init__`) if the `append` key
+    isn't set, or the config/step can't be read at all.
+    """
+    try:
+        output_step = _load_config(project_dir, config_filename)["steps"]["output"]
+    except (KeyError, TypeError, OSError, tomllib.TOMLDecodeError):
+        return True
+    return bool(output_step.get("append", True))
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -409,12 +457,10 @@ def resolve_pipeline_class(pipeline_class: str):
     """Import and return the class a `pipeline_class` dotted path (e.g.
     'pyopia.process.Segment') names.
 
-    Same resolution PyOPIA's own `pipeline.py` uses internally to load a step's class -
-    reused here (for introspection and thumbnail generation) rather than reinvented, so
-    both stay consistent with how PyOPIA itself loads pipeline steps. Real unit tests
-    (tests/test_docker_client.py) resolve stdlib classes rather than PyOPIA ones, so they
-    don't need PyOPIA installed; its source is embedded verbatim into the Docker-side
-    scripts below via `inspect.getsource`, so what's tested is what runs.
+    Same resolution PyOPIA's own `pipeline.py` uses internally to load a step's class.
+    Defined as a real top-level function, not embedded script text, so it has real unit
+    tests independent of Docker/PyOPIA - its source is embedded verbatim into the
+    Docker-side scripts below via `inspect.getsource`, so what's tested is what runs.
     """
     classname = pipeline_class.rsplit(".", 1)[-1]
     modulename = pipeline_class.rsplit(".", 1)[0]
@@ -426,10 +472,8 @@ def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
 
     numpydoc sections look like "Heading\\n----...\\n" - find every such heading, then take
     the lines between the "Parameters" heading and whichever heading comes next (usually
-    "Returns"). A real, defined top-level function (not just embedded script text) so it has
-    real unit tests (tests/test_docker_client.py) against synthetic docstrings, independent of
-    Docker/PyOPIA being installed at all - its source is embedded verbatim into
-    `_INTROSPECT_STEPS_SCRIPT` below via `inspect.getsource`, so what's tested is what runs.
+    "Returns"). Embedded verbatim into `_INTROSPECT_STEPS_SCRIPT` below via
+    `inspect.getsource`, so what's unit-tested here is what actually runs.
     """
     if not doc:
         return {}
@@ -463,11 +507,10 @@ def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
 
 
 def docstring_summary(doc: str | None) -> str:
-    """The introductory paragraph of a numpydoc-style docstring - just the plain-language
-    "what does this step do" text PyOPIA's own class docstrings open with, before any
-    "Required keys"/other detail. Strips Sphinx cross-reference markup (`:class:`x``,
-    `:func:`x``) down to the bare name, since that's meant for rendered docs, not a plain
-    label in the Configuration tab. Same tested-then-embedded pattern as `parse_numpydoc_params`.
+    """The introductory paragraph of a numpydoc-style docstring, before any
+    "Parameters"/"Returns" section. Strips Sphinx cross-reference markup
+    (`:class:`x``, `:func:`x``) down to the bare name, since that's meant for
+    rendered docs, not a plain label in the Configuration tab.
     """
     if not doc:
         return ""
@@ -503,31 +546,38 @@ def jsonable(value):
 with open(sys.argv[1], "rb") as f:
     config = tomllib.load(f)
 
-result = {{}}
-for step_name, step in (config.get("steps") or {{}}).items():
-    pipeline_class = step.get("pipeline_class") if isinstance(step, dict) else None
-    if not pipeline_class:
-        continue
-    try:
-        cls = resolve_pipeline_class(pipeline_class)
-        doc = inspect.getdoc(cls)
-        descriptions = parse_numpydoc_params(doc)
-        summary = docstring_summary(doc)
-        fields = []
-        for name, param in inspect.signature(cls.__init__).parameters.items():
-            if name == "self" or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-                continue
-            has_default = param.default is not inspect.Parameter.empty
-            fields.append({{
-                "name": name,
-                "current_value": jsonable(step.get(name)),
-                "has_default": has_default,
-                "default": jsonable(param.default) if has_default else None,
-                "description": descriptions.get(name, ""),
-            }})
-        result[step_name] = {{"pipeline_class": pipeline_class, "summary": summary, "fields": fields}}
-    except Exception as e:
-        result[step_name] = {{"pipeline_class": pipeline_class, "error": f"{{type(e).__name__}}: {{e}}"}}
+def introspect_table(table):
+    table_result = {{}}
+    for step_name, step in (table or {{}}).items():
+        pipeline_class = step.get("pipeline_class") if isinstance(step, dict) else None
+        if not pipeline_class:
+            continue
+        try:
+            cls = resolve_pipeline_class(pipeline_class)
+            doc = inspect.getdoc(cls)
+            descriptions = parse_numpydoc_params(doc)
+            summary = docstring_summary(doc)
+            fields = []
+            for name, param in inspect.signature(cls.__init__).parameters.items():
+                if name == "self" or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                    continue
+                has_default = param.default is not inspect.Parameter.empty
+                fields.append({{
+                    "name": name,
+                    "current_value": jsonable(step.get(name)),
+                    "has_default": has_default,
+                    "default": jsonable(param.default) if has_default else None,
+                    "description": descriptions.get(name, ""),
+                }})
+            table_result[step_name] = {{"pipeline_class": pipeline_class, "summary": summary, "fields": fields}}
+        except Exception as e:
+            table_result[step_name] = {{"pipeline_class": pipeline_class, "error": f"{{type(e).__name__}}: {{e}}"}}
+    return table_result
+
+result = {{
+    "steps": introspect_table(config.get("steps")),
+    "steps_disabled": introspect_table(config.get("steps_disabled")),
+}}
 
 print(json.dumps(result))
 """
@@ -536,13 +586,17 @@ print(json.dumps(result))
 def introspect_config_steps(project_dir: Path, config_filename: str = "config.toml", image: str = PYOPIA_IMAGE) -> dict:
     """Per-step parameter schema for `config_filename`, introspected from the pinned PyOPIA image.
 
-    One `docker run` for the whole config, not one per step - each step's `pipeline_class`
-    is imported and inspected (`inspect.signature` + its own docstring) inside the container,
-    so the fields/descriptions shown always match the exact PyOPIA version this project uses.
-    A step whose class can't be imported or introspected gets {"error": ...} instead of
-    {"fields": ...} - callers should fall back to bare key/value editing for that step alone,
-    not fail the whole tab (see refresh_results()'s _STATS_READ_ERRORS handling for the same
-    per-item-fallback pattern).
+    Returns {"steps": {step_name: {...}}, "steps_disabled": {step_name: {...}}} - both
+    tables (see `set_step_enabled`) are introspected the same way, so a disabled step's
+    fields can still be shown/edited before it's re-enabled. Returns {} on any failure
+    (Docker error, timeout, unparseable output) - callers should treat a missing
+    "steps"/"steps_disabled" key as {} via `.get(..., {})`.
+
+    One `docker run` for the whole config: each step's `pipeline_class` is imported and
+    inspected (`inspect.signature` + its own docstring) inside the container, so the
+    fields/descriptions shown always match the exact PyOPIA version this project uses. A
+    step whose class can't be imported gets {"error": ...} instead of {"fields": ...} -
+    callers should fall back to bare key/value editing for that step alone.
     """
     command = [
         "docker",
@@ -572,17 +626,48 @@ THUMBNAIL_DIR_NAME = ".pyopia_gui_thumbnails"
 _BROWSER_VIEWABLE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
 
 
+def list_raw_files(project_dir: Path, raw_files_pattern: str) -> list[Path]:
+    """The project's raw files matching `raw_files_pattern` (config.toml's own
+    `general.raw_files` glob), sorted - the same glob+sort the Raw data explorer's
+    thumbnail grid uses for its own listing, factored out here so Preview's
+    background-correction context (see `preview_pipeline`'s `context_raw_paths`)
+    can find a sample's preceding files without duplicating this.
+    """
+    return sorted(project_dir.glob(raw_files_pattern))
+
+
+def select_background_context(raw_paths: list[Path], sample: Path, required: int) -> list[Path]:
+    """Pick `required` real raw files from `raw_paths` to seed a background-correction
+    step before running `sample` through it - preferring the files immediately
+    preceding `sample` (matching what a real sequential run would have accumulated by
+    then), and only reaching for files after it to fill the remainder when there
+    aren't enough preceding ones (e.g. a sample near the start of the file list).
+    Not always symmetric: `CorrectBackgroundAccurate`'s moving-average stack only
+    needs this many distinct images seeding it, not any particular order.
+
+    Returns `[]` if `sample` isn't in `raw_paths`, or fewer than `required` other
+    files exist to draw from at all - the caller falls back to substituting the
+    background step away in that case.
+    """
+    if required <= 0 or sample not in raw_paths:
+        return []
+    sample_index = raw_paths.index(sample)
+    preceding = raw_paths[:sample_index]
+    following = raw_paths[sample_index + 1 :]
+    if len(preceding) >= required:
+        return preceding[-required:]
+    context = preceding + following[: required - len(preceding)]
+    return context if len(context) == required else []
+
+
 def thumbnail_path(project_dir: Path, raw_path: Path) -> Path:
     """Where the preview for `raw_path` (a raw file under `project_dir`) lives.
 
-    Already browser-viewable raw files (e.g. UVP's own raw images, which are already
-    .png - pyopia/instrument/uvp.py) are served directly from their real path, no
-    conversion needed. Everything else (silcam .silc, holo .pgm, ...) gets a cached
-    thumbnail under THUMBNAIL_DIR_NAME, generated on demand by `generate_thumbnails` -
-    a dedicated, dot-prefixed cache folder, deliberately not PyOPIA's own
-    `images_converted/` name (that's a different, full-resolution output produced by
-    PyOPIA's own `convert-raw-images` command, whose `output_folder.mkdir()` has no
-    `exist_ok=True` - reusing that name risks a real collision).
+    Already browser-viewable raw files (e.g. UVP's own .png images) are served directly
+    from their real path, no conversion needed. Everything else (silcam .silc, holo
+    .pgm, ...) gets a cached thumbnail under THUMBNAIL_DIR_NAME, generated on demand by
+    `generate_thumbnails` - deliberately not PyOPIA's own `images_converted/` name,
+    which is a different output folder produced by `convert-raw-images`.
     """
     if raw_path.suffix.lower() in _BROWSER_VIEWABLE_EXTENSIONS:
         return raw_path
@@ -594,8 +679,8 @@ def thumbnail_path(project_dir: Path, raw_path: Path) -> Path:
 # once per file) and lets matplotlib's imsave() handle the per-instrument-type array
 # normalization (uint8 RGB for silcam, float grayscale for holo, ...) rather than
 # hand-rolling that per format. One Docker call converts a whole batch, not one call per
-# image - confirmed by testing that container startup, not the actual conversion, is what
-# dominates a single call's cost. Prints a result line after *each* image (not just a
+# image, since container startup - not the actual conversion - dominates a single call's
+# cost. Prints a result line after *each* image (not just a
 # running count, and not just a final summary at the end) so the caller can update that
 # one image's own preview as soon as it's ready, rather than only once the whole batch
 # finishes.
@@ -618,9 +703,9 @@ requests = json.loads(sys.argv[2])
 for i, (raw_path, out_path) in enumerate(requests):
     # Write matplotlib's full-res output to a separate temp path, then read *that* and
     # save the resized thumbnail to out_path - reading and writing the same path in one
-    # step is a real, confirmed source of corrupt/truncated PNGs on some filesystems
-    # (seen over a Docker bind mount), since PIL's Image.open() keeps a lazy reference
-    # to the file it's still open on when the save() back to that same path happens.
+    # step risks corrupt/truncated PNGs on some filesystems (e.g. a Docker bind mount),
+    # since PIL's Image.open() keeps a lazy reference to the file it's still open on
+    # when the save() back to that same path happens.
     tmp_path = out_path + ".tmp"
     error = None
     try:
@@ -660,19 +745,16 @@ async def generate_thumbnails(
 ) -> dict[str, str]:
     """Generate cached preview thumbnails for `raw_paths` (paths under `project_dir`).
 
-    One Docker call for the whole batch (typically a page's worth of images), not one
-    per image - see `_GENERATE_THUMBNAILS_SCRIPT`'s comment for why. Raw files already
-    browser-viewable are skipped, no Docker call needed for them (see `thumbnail_path`).
-    Streamed via `run_streamed` (not a single blocking call): `on_progress(done, total)`
-    and `on_image_done(raw_path, error)` - error is None on success - are both called as
-    each image in the batch finishes, so the caller can update the overall progress bar
-    *and* that specific image's own preview immediately, not only once the whole batch
-    completes.
+    One Docker call for the whole batch, not one per image (container startup
+    dominates the cost of a single call). Raw files already browser-viewable are
+    skipped (see `thumbnail_path`). Streamed via `run_streamed`: `on_progress(done,
+    total)` and `on_image_done(raw_path, error)` are both called as each image
+    finishes, so the caller can update the overall progress bar and that image's own
+    preview immediately, not only once the whole batch completes.
 
     Returns {str(raw_path): error_message} for any image that failed to convert - a
     missing entry means it succeeded and `thumbnail_path(project_dir, raw_path)` now
-    exists on disk. Callers should show the successfully-converted thumbnails and a
-    per-image error for the rest, not fail the whole page over one bad file.
+    exists on disk.
     """
     to_convert = [p for p in raw_paths if p.suffix.lower() not in _BROWSER_VIEWABLE_EXTENSIONS]
     if not to_convert:
@@ -787,11 +869,10 @@ def interpret_thumbnail_error(error: str) -> str | None:
     """Give a plain-language explanation for a recognised `generate_thumbnails` failure.
 
     Returns None if nothing recognisable was found, so the caller can fall back to the
-    raw error - same calibrated-not-blanket pattern as `interpret_failure`. The one
-    pattern recognised so far is a real, confirmed failure mode: the project's
-    `steps.load.pipeline_class` doesn't actually match its raw files' format (e.g. a
-    holo loader pointed at silcam .silc files), which surfaces as an image-library
-    "no backend" error that means nothing to a non-expert user.
+    raw error. The one pattern recognised so far: the project's
+    `steps.load.pipeline_class` not matching its raw files' actual format (e.g. a holo
+    loader pointed at silcam .silc files) surfaces as an image-library "no backend"
+    error that means nothing to a non-expert user.
     """
     if any(marker in error.lower() for marker in _THUMBNAIL_LOAD_MISMATCH_MARKERS):
         return (
@@ -799,6 +880,380 @@ def interpret_thumbnail_error(error: str) -> str | None:
             "usually means the Configuration tab's load step doesn't match this "
             "project's actual raw file format. Check steps.load.pipeline_class there."
         )
+    return None
+
+
+PREVIEW_DIR_NAME = ".pyopia_gui_preview"
+
+
+def required_background_context(config: dict) -> int:
+    """How many preceding raw files a background-correction step in `config` needs
+    before it can produce a corrected image - the `average_window` of any step whose
+    `pipeline_class` is under `pyopia.background.*`, or 0 if no such step is
+    configured. Defaults to 1 (matching `CorrectBackgroundAccurate.__init__`) if
+    `average_window` itself isn't set.
+
+    Used by the Preview tab to gather that many preceding raw files as
+    `preview_pipeline`'s `context_raw_paths`, so background correction can run for
+    real instead of always being substituted away.
+    """
+    steps = config.get("steps")
+    if not isinstance(steps, dict):
+        return 0
+    for step in steps.values():
+        if isinstance(step, dict) and str(step.get("pipeline_class", "")).startswith("pyopia.background."):
+            return int(step.get("average_window", 1))
+    return 0
+
+
+def _substitute_background_steps(config: dict) -> tuple[dict, bool]:
+    """Replace any step whose `pipeline_class` is under `pyopia.background.*` with
+    `CorrectBackgroundNone` (PyOPIA's own documented no-op substitute) - the fallback
+    preview path, used only when there aren't enough preceding raw files to seed the
+    real background step (see `required_background_context`). A background step
+    needs several images (`average_window`) before it produces anything at all, so a
+    lone preview image can never satisfy it on its own.
+
+    Matched by `pipeline_class` module prefix, not dict key name - a project's
+    background step can be named anything, or be absent entirely. Doesn't mutate
+    `config`. Returns `(new_config, any_step_was_replaced)` so the caller can show a
+    caveat only when it's actually relevant. Embedded verbatim into
+    `_PREVIEW_PIPELINE_SCRIPT` below via `inspect.getsource`, so what's unit-tested
+    here is what actually runs.
+    """
+    new_config = json.loads(json.dumps(config))
+    steps = new_config.get("steps")
+    if not isinstance(steps, dict):
+        return new_config, False
+    replaced = False
+    for name, step in steps.items():
+        if isinstance(step, dict) and str(step.get("pipeline_class", "")).startswith("pyopia.background."):
+            steps[name] = {"pipeline_class": "pyopia.background.CorrectBackgroundNone"}
+            replaced = True
+    return new_config, replaced
+
+
+def _remove_output_steps(config: dict) -> dict:
+    """Drop any step whose `pipeline_class` is under `pyopia.io.*` (e.g. `StatsToDisc`)
+    entirely, for single-image preview purposes only.
+
+    Left in place, an output step would write a real STATS.nc file as an unwanted side
+    effect of a mere preview (or overwrite the project's real accumulated output), or
+    fail outright since preview never runs the CLI's own "prepare folders" step.
+    Preview only needs `pipeline.data` in memory, so the step is dropped outright
+    rather than substituted with a no-op class. Matched by `pipeline_class` module
+    prefix, not step name, same as `_substitute_background_steps`. Doesn't mutate
+    `config`; embedded the same tested-then-embedded way.
+    """
+    new_config = json.loads(json.dumps(config))
+    steps = new_config.get("steps")
+    if not isinstance(steps, dict):
+        return new_config
+    new_config["steps"] = {
+        name: step
+        for name, step in steps.items()
+        if not (isinstance(step, dict) and str(step.get("pipeline_class", "")).startswith("pyopia.io."))
+    }
+    return new_config
+
+
+# Runs inside the project's own pinned PyOPIA image, against exactly one raw file (plus,
+# when available, real preceding raw files to seed background correction - see
+# context_paths below). `config` travels in as a JSON argv string, not a file - it may be
+# the Configuration tab's current *unsaved* widget values, not what's on disk in
+# config.toml, and a background-substituted version should never be written into the
+# user's own project folder. For a holo project, every slice of the reconstructed depth
+# stack (`data['im_stack']`) is saved too - `Reconstruct` keeps the whole stack in memory
+# and `Focus` never discards it, so this is a real, zero-recompute depth-slider dataset
+# once this one Docker call finishes, not something that needs recomputing per slider
+# position.
+_PREVIEW_PIPELINE_SCRIPT = f"""
+import json, logging, os, sys, uuid
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from PIL import Image
+import pyopia.pipeline
+
+{inspect.getsource(_substitute_background_steps)}
+
+{inspect.getsource(_remove_output_steps)}
+
+# PyOPIA's own Pipeline already logs a real, meaningful progress trail via the
+# stdlib root logger - "Initialising pipeline", "Running pipeline step: X" for
+# each step in turn, etc. (pyopia/pipeline.py) - forwarding it as-is, prefixed so
+# the host side can tell it apart from the one final JSON result line, gives real
+# per-step progress on a run that can otherwise take 30+ seconds with no
+# indication of what's happening, with no changes needed inside PyOPIA itself.
+class _ProgressHandler(logging.Handler):
+    def emit(self, record):
+        print("PREVIEW_PROGRESS " + record.getMessage(), flush=True)
+
+logging.getLogger().addHandler(_ProgressHandler())
+logging.getLogger().setLevel(logging.INFO)
+
+config = json.loads(sys.argv[1])
+sample_path = sys.argv[2]
+context_paths = json.loads(sys.argv[3])
+
+if context_paths:
+    # Enough real preceding raw files were found to seed the actual configured
+    # background step for real - see required_background_context()/preview_pipeline's
+    # context_raw_paths. Nothing to substitute; the step runs as genuinely configured.
+    background_step_skipped = False
+else:
+    config, background_step_skipped = _substitute_background_steps(config)
+config = _remove_output_steps(config)
+
+run_id = uuid.uuid4().hex[:8]
+run_dir = os.path.join("{PREVIEW_DIR_NAME}", run_id)
+os.makedirs(run_dir, exist_ok=True)
+
+try:
+    pipeline = pyopia.pipeline.Pipeline(config)
+    for context_path in context_paths:
+        # Seeds the background step's moving-average stack, same as a real batch
+        # run processing these files in order would - each of these calls is
+        # expected to return early (Data.skip_next_steps) once it reaches the
+        # background step, since the stack isn't full yet; only the *last*
+        # (sample_path) call below should actually complete it.
+        pipeline.run(context_path)
+    pipeline.run(sample_path)
+except Exception as e:
+    print(json.dumps({{"ok": False, "error": f"{{type(e).__name__}}: {{e}}"}}))
+    sys.exit(0)
+
+data = pipeline.data
+
+if context_paths and data.get("im_corrected") is None:
+    # The real background step still didn't produce a corrected image despite
+    # being given what should have been enough context - the caller's count of
+    # preceding files didn't actually match what this step needed (e.g. config
+    # changed between gathering context and this call). Report it plainly rather
+    # than silently continuing with an im_corrected that was never produced.
+    print(json.dumps({{
+        "ok": False,
+        "error": "Background correction did not complete with the preceding raw files given - "
+                 "try a different sample image.",
+    }}))
+    sys.exit(0)
+
+stats = data.get("stats")
+image_stats = data.get("image_stats")
+
+particle_count = None
+d50_microns = None
+saturation = None
+if image_stats is not None and len(image_stats) > 0:
+    row = image_stats.iloc[0]
+    if "particle_count" in row and row["particle_count"] == row["particle_count"]:
+        particle_count = int(row["particle_count"])
+    if "d50" in row and row["d50"] == row["d50"]:
+        d50_microns = float(row["d50"])
+    if "saturation" in row and row["saturation"] == row["saturation"]:
+        saturation = float(row["saturation"])
+if particle_count is None:
+    # image_stats was empty/missing, but stats (per-particle rows) still tells us how
+    # many particles were found - "zero particles found" is a normal outcome here, not
+    # an error, so this still reports a real count rather than falling through to None.
+    particle_count = int(len(stats)) if stats is not None else 0
+
+# For holo, im_focussed (each detected particle pasted in at its own best-focus
+# crop, everything else blank) is what actually shows "detected particles" -
+# im_corrected there is still just the raw, unfocused interference pattern, not
+# a meaningful particle image. Falls back to im_corrected for silcam/uvp, where
+# there's no im_focussed and im_corrected already *is* the real particle image.
+overlay_source = data.get("im_focussed")
+if overlay_source is None:
+    overlay_source = data.get("im_corrected")
+overlay_filename = None
+if overlay_source is not None:
+    fig, ax = plt.subplots()
+    ax.imshow(np.asarray(overlay_source), cmap="gray")
+    if stats is not None:
+        for _, row in stats.iterrows():
+            if all(k in row.index for k in ("minr", "minc", "maxr", "maxc")):
+                ax.add_patch(Rectangle(
+                    (row["minc"], row["minr"]),
+                    row["maxc"] - row["minc"],
+                    row["maxr"] - row["minr"],
+                    fill=False, edgecolor="red", linewidth=1,
+                ))
+    ax.axis("off")
+    overlay_filename = "overlay.png"
+    # A single, non-interleaved savefig straight to this run's own fresh, unique path -
+    # nothing ever reads it before this script has finished and printed its result, so
+    # there's no partial-file window to guard against here (unlike generate_thumbnails,
+    # where a cached thumbnail is read back by a later, independent request).
+    fig.savefig(os.path.join(run_dir, overlay_filename), bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+slice_filenames = None
+z_values = None
+im_stack = data.get("im_stack")
+if im_stack is not None:
+    slice_filenames = []
+    n_slices = im_stack.shape[2]
+    for i in range(n_slices):
+        if i % 10 == 0 or i == n_slices - 1:
+            print(f"PREVIEW_PROGRESS Rendering depth slice {{i + 1}} of {{n_slices}}", flush=True)
+        # Normalized per-slice (each slice's own min/max), not against the whole
+        # stack's range - matches how a depth-stack viewer conventionally shows each
+        # slice at its own best contrast, since a single global range would make most
+        # slices look nearly blank next to whichever one happens to have the widest range.
+        arr = np.asarray(im_stack[:, :, i], dtype=np.float64)
+        arr_min, arr_max = float(arr.min()), float(arr.max())
+        normalized = (arr - arr_min) / (arr_max - arr_min) * 255 if arr_max > arr_min else np.zeros_like(arr)
+        # Inverted - im_stack's own raw convention is high value = particle, but
+        # PyOPIA itself displays/interprets reconstructions the other way round
+        # (holo.py's Focus step explicitly does `1 - im_focussed` before storing
+        # it) - dark particles on a bright background, matching what a user
+        # would see from any of PyOPIA's own real output, not the raw inverse.
+        normalized = 255 - normalized
+        slice_filename = f"slice-{{i:04d}}.png"
+        Image.fromarray(normalized.astype("uint8")).save(os.path.join(run_dir, slice_filename))
+        slice_filenames.append(slice_filename)
+    recon_params = data.get("holo_recon_params")
+    if recon_params is not None:
+        try:
+            # Same formula PyOPIA's own MergeStats uses for stats['z'] (pyopia/instrument/holo.py)
+            # - real mm, not the internal FFT kernel's metres-with-refractive-index version.
+            candidate_z_values = list(
+                np.arange(recon_params["minZ"], recon_params["maxZ"] + recon_params["stepZ"], recon_params["stepZ"])
+            )
+        except (KeyError, TypeError):
+            candidate_z_values = None
+        # Floating-point np.arange can disagree by one element between this (unscaled,
+        # mm) computation and the one create_kernel() actually used to size im_stack
+        # (scaled to metres before its own arange) - if the counts don't match, showing
+        # no depth labels is safer than silently mislabeling/misaligning slices.
+        if candidate_z_values is not None and len(candidate_z_values) == im_stack.shape[2]:
+            z_values = candidate_z_values
+
+print(json.dumps({{
+    "ok": True,
+    "particle_count": particle_count,
+    "d50_microns": d50_microns,
+    "saturation": saturation,
+    "background_step_skipped": background_step_skipped,
+    "run_id": run_id,
+    "overlay_filename": overlay_filename,
+    "slice_filenames": slice_filenames,
+    "z_values": z_values,
+}}))
+"""
+
+
+async def preview_pipeline(
+    project_dir: Path,
+    config: dict,
+    sample_raw_path: Path,
+    image: str = PYOPIA_IMAGE,
+    on_progress: Callable[[str], None] | None = None,
+    context_raw_paths: list[Path] | None = None,
+) -> dict:
+    """Run the pipeline described by `config` against exactly one raw file, and return
+    its single-image results - particle count/d50/saturation, an overlay image with
+    detected particles outlined, and (for a holo project) every depth slice of the
+    reconstructed stack, for a zero-recompute depth slider in the UI.
+
+    `config` may be the Configuration tab's current unsaved widget values, not
+    necessarily what's on disk - it travels into the container as a JSON argv string,
+    not a temp .toml file, since a background-correction-substituted config (see
+    `_substitute_background_steps`) shouldn't be written into the user's project folder.
+
+    `context_raw_paths`, if given, are real preceding raw files used to seed a real
+    configured background-correction step before running `sample_raw_path` - see
+    `required_background_context()` for how many to gather. When there aren't enough
+    (or none given), the background step is substituted away instead and
+    `background_step_skipped` comes back True in the result.
+
+    A real run can take 30+ seconds (holo reconstruction, many depth slices) -
+    `on_progress(message)` is called, if given, for each progress line the container
+    reports (PyOPIA's own Pipeline step logging, plus this module's own depth-slice
+    render progress), streamed via `run_streamed`.
+
+    Returns one of:
+        {"ok": True, "particle_count": int, "d50_microns": float | None,
+         "saturation": float | None, "background_step_skipped": bool,
+         "overlay_path": Path | None, "slice_paths": list[Path] | None,
+         "z_values": list[float] | None}
+        {"ok": False, "error": str}
+    `error` is the raw "ExceptionType: message" text - callers should run it through
+    `interpret_preview_error()` for a friendlier message, falling back to the raw text.
+    """
+    preview_dir = project_dir / PREVIEW_DIR_NAME
+    preview_dir.mkdir(exist_ok=True)
+    # .as_posix(), not str() - same Windows-backslash fix already applied in
+    # generate_thumbnails, for the same reason.
+    context_container_paths = [
+        f"{_CONTAINER_WORKDIR}/{p.relative_to(project_dir).as_posix()}" for p in (context_raw_paths or [])
+    ]
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        *_user_args(),
+        "--entrypoint",
+        "python",
+        *_volume_args(project_dir),
+        image,
+        "-c",
+        _PREVIEW_PIPELINE_SCRIPT,
+        json.dumps(config),
+        f"{_CONTAINER_WORKDIR}/{sample_raw_path.relative_to(project_dir).as_posix()}",
+        json.dumps(context_container_paths),
+    ]
+
+    result_line: str | None = None
+
+    def on_line(line: str) -> None:
+        nonlocal result_line
+        if line.startswith("PREVIEW_PROGRESS "):
+            if on_progress:
+                on_progress(line.removeprefix("PREVIEW_PROGRESS "))
+            return
+        if line.startswith("{"):
+            # The one line that's the final JSON result - matched by shape, not
+            # just "not progress-prefixed", since stderr noise (a numpy/matplotlib
+            # warning, stdout+stderr are combined by run_streamed) is also
+            # unprefixed and shouldn't be mistaken for it.
+            result_line = line
+
+    exit_code = await run_streamed(command, on_line)
+    if exit_code != 0 or result_line is None:
+        return {"ok": False, "error": "Docker call failed - see the log for details"}
+    try:
+        payload = json.loads(result_line)
+    except ValueError:
+        return {"ok": False, "error": "Docker call failed - see the log for details"}
+    if not payload.get("ok"):
+        return {"ok": False, "error": payload.get("error", "Unknown error")}
+
+    run_dir = preview_dir / payload["run_id"]
+    overlay_path = run_dir / payload["overlay_filename"] if payload.get("overlay_filename") else None
+    slice_paths = [run_dir / name for name in payload["slice_filenames"]] if payload.get("slice_filenames") else None
+    return {
+        "ok": True,
+        "particle_count": payload["particle_count"],
+        "d50_microns": payload["d50_microns"],
+        "saturation": payload["saturation"],
+        "background_step_skipped": payload["background_step_skipped"],
+        "overlay_path": overlay_path,
+        "slice_paths": slice_paths,
+        "z_values": payload["z_values"],
+    }
+
+
+def interpret_preview_error(error: str) -> str | None:
+    """Give a plain-language explanation for a recognised `preview_pipeline` failure.
+
+    Returns None (falling back to the raw error) if nothing recognisable was found.
+    No patterns are recognised yet - an empty hook, same shape as
+    `interpret_thumbnail_error`/`interpret_failure`.
+    """
     return None
 
 
@@ -820,8 +1275,8 @@ def extract_pyopia_version(output_lines: list[str]) -> str | None:
 
 
 # PyOPIA's own "download example data" step (urllib.request.urlretrieve, a ~44MB zip)
-# prints no progress at all while it runs - confirmed a real, successful run got killed
-# by a too-short timeout here, well before it could finish on an ordinary connection.
+# prints no progress at all while it runs, so this must be generous enough not to kill
+# a real, still-succeeding download on an ordinary connection.
 INACTIVITY_TIMEOUT_SECONDS = 600
 
 
@@ -829,12 +1284,9 @@ async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> in
     """Run `command`, calling `on_line` for each combined stdout/stderr line as it arrives.
 
     Returns the process's exit code. If no output arrives for
-    `INACTIVITY_TIMEOUT_SECONDS`, the process is killed and this returns -1 instead
-    of hanging forever - real case seen: a stalled Docker image pull (stuck on
-    "pulling fs layer" with a flaky WSL2 network) otherwise left the app waiting
-    indefinitely with no feedback and no way to recover short of restarting it.
-    A real, working run - even a slow one - keeps producing output well within
-    this window; a multi-minute total silence means something has actually stuck.
+    `INACTIVITY_TIMEOUT_SECONDS`, the process is killed and this returns -1 instead of
+    hanging forever on a stalled network operation (e.g. a stuck Docker image pull)
+    with no way to recover short of restarting the app.
     """
     process = await asyncio.create_subprocess_exec(
         *command,

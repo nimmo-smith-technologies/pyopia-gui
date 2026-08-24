@@ -3,8 +3,10 @@
 
 import math
 import os
+import shutil
 import tomllib
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
 import tomli_w
@@ -13,7 +15,17 @@ from nicegui import run as nicegui_run
 
 from pyopia_gui import __version__, docker_client, vendored_stats, version_check
 
-DEFAULT_PROJECT_DIR = Path.home() / "pyopia-gui-projects" / "demo"
+# Overridable via env var, same pattern as docker_client.PYOPIA_IMAGE - not a
+# user-facing feature, but the only way to override this at all: NiceGUI's test
+# harness (nicegui.testing.user_plugin) runs this whole file fresh per test via
+# `runpy.run_path(..., run_name='__main__')`, an isolated execution disconnected
+# from `sys.modules['pyopia_gui.main']` - a test monkeypatching this module's
+# DEFAULT_PROJECT_DIR attribute directly has no effect on the app instance it's
+# actually testing. os.environ is real process-wide global state, so it's the one
+# thing a test can actually reach.
+DEFAULT_PROJECT_DIR = Path(
+    os.environ.get("PYOPIA_GUI_DEFAULT_PROJECT_DIR", str(Path.home() / "pyopia-gui-projects" / "demo"))
+)
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
 LICENSE_URL = f"{REPO_URL}/blob/main/LICENSE"
 THIRD_PARTY_LICENSES_URL = f"{REPO_URL}/blob/main/THIRD_PARTY_LICENSES.md"
@@ -29,6 +41,25 @@ _STATS_READ_ERRORS = (KeyError, ValueError, OSError, tomllib.TOMLDecodeError, Ty
 # introspecting - they're not tied to any pipeline_class (see docker_client's
 # introspect_config_steps), so there's no class docstring to pull a description from.
 _GENERAL_LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+# The Configuration tab only offers an enable/disable switch for "classifier".
+# PyOPIA's Pipeline.__init__ default `initial_steps=['initial', 'classifier',
+# 'createbackground']` names two other steps that are *also* order-independent
+# by the same mechanism (always constructed during __init__, regardless of dict
+# position) - deliberately not offered as toggleable anyway:
+# - "initial" (holo's Initial step) - always required when present. It sets up
+#   `data['holo_recon_params']`, which Reconstruct needs; disabling it would
+#   break every later holo step, not skip something optional.
+# - "createbackground" - checked directly: no PyOPIA-shipped `generate_config`
+#   (silcam/holo/uvp) ever emits a step with this name, and no class in the
+#   codebase matches it either - it's a reserved default with nothing real to
+#   attach a toggle to today.
+# Every OTHER step is a real, sequential pipeline stage whose position matters
+# (e.g. `reconstruct` must run before `segmentation`) - re-enabling one of those
+# after disabling it can't be placed back at its correct position (TOML has no
+# way to remember "this step's original position relative to steps in the
+# *other* table" once it's moved out to steps_disabled and back).
+_ORDER_INSENSITIVE_STEP_NAMES = frozenset({"classifier"})
 
 
 def _toml_value_from_text(text: str) -> object:
@@ -47,18 +78,20 @@ def _text_from_toml_value(value: object) -> str:
     return tomli_w.dumps({"_": value}).removeprefix("_ = ").strip()
 
 
-async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[bool, dict[str, str] | None]:
+async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[bool, dict[str, object] | None]:
     """Ask for the instrument type (and confirm-before-overwrite) for a fresh default config.
 
     Pre-fills from the project's existing config where possible - most projects only need
     to pick the instrument, not retype paths PyOPIA already knows about. Returns
-    (confirmed, generate_config_command kwargs); kwargs is None if cancelled.
+    (confirmed, generate_config_command kwargs plus "classifier_enabled"); kwargs is None
+    if cancelled.
     """
     general = config.get("general") if isinstance(config.get("general"), dict) else {}
     steps = config.get("steps") if isinstance(config.get("steps"), dict) else {}
     load_class = (steps.get("load") or {}).get("pipeline_class", "") if isinstance(steps.get("load"), dict) else ""
     default_instrument = next((i for i in ("silcam", "holo", "uvp") if i in load_class), "silcam")
     classifier_step = steps.get("classifier") if isinstance(steps.get("classifier"), dict) else {}
+    existing_model_path = classifier_step.get("model_path", "")
 
     with ui.dialog() as dialog, ui.card():
         ui.label("Generate a default config.toml?").classes("text-lg font-medium")
@@ -73,24 +106,35 @@ async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[boo
         raw_files_input = ui.input("Raw files pattern", value=general.get("raw_files", "images/*.silc")).classes(
             "w-full"
         )
-        model_path_input = ui.input("Classifier model path", value=classifier_step.get("model_path", "")).classes(
-            "w-full"
+        classifier_checkbox = ui.checkbox("Enable particle classification", value=bool(existing_model_path))
+        model_path_input = ui.input("Classifier model path", value=existing_model_path).classes("w-full")
+        model_path_input.bind_visibility_from(classifier_checkbox, "value")
+        model_path_input.tooltip(
+            "Path to a .keras classifier model file, relative to the project folder - "
+            "used for silcam, holo, and uvp alike"
         )
-        model_path_input.tooltip("Only used for silcam - leave blank for holo/uvp")
         outfolder_input = ui.input("Output folder", value="processed").classes("w-full")
         output_prefix_input = ui.input("Output filename prefix", value=project_dir.name).classes("w-full")
+
+        def try_submit() -> None:
+            if classifier_checkbox.value and not model_path_input.value.strip():
+                ui.notify("Classifier model path is required when classification is enabled", type="negative")
+                return
+            dialog.submit(True)
+
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
-            ui.button("Generate", on_click=lambda: dialog.submit(True))
+            ui.button("Generate", on_click=try_submit)
     confirmed = bool(await dialog)
     if not confirmed:
         return False, None
     return True, {
         "instrument": instrument_select.value,
         "raw_files": raw_files_input.value,
-        "model_path": model_path_input.value,
+        "model_path": model_path_input.value if classifier_checkbox.value else "",
         "outfolder": outfolder_input.value,
         "output_prefix": output_prefix_input.value,
+        "classifier_enabled": classifier_checkbox.value,
     }
 
 
@@ -289,12 +333,14 @@ def index() -> None:
         ui.tab("project", label="1. Project")
         explorer_tab = ui.tab("explorer", label="2. Raw data explorer")
         config_tab = ui.tab("config", label="3. Configuration")
-        process_tab = ui.tab("process", label="4. Process")
-        results_tab = ui.tab("results", label="5. Results")
+        preview_tab = ui.tab("preview", label="4. Preview")
+        process_tab = ui.tab("process", label="5. Process")
+        results_tab = ui.tab("results", label="6. Results")
     process_tab.disable()
     results_tab.disable()
     config_tab.disable()
     explorer_tab.disable()
+    preview_tab.disable()
 
     with ui.tab_panels(tabs, value="project").classes("w-full"):
         with ui.tab_panel("project"):
@@ -319,12 +365,24 @@ def index() -> None:
         with ui.tab_panel("config"):
             config_container = ui.column().classes("w-full gap-4")
 
+        with ui.tab_panel("preview"):
+            preview_container = ui.column().classes("w-full gap-4")
+
         with ui.tab_panel("process"):
             process_project_label = ui.label().classes("font-mono text-sm text-gray-500 break-all")
             ui.label(
                 "Runs PyOPIA on the project folder above - once finished, results are "
                 "available on the Results tab (including generating a montage there, on demand)."
             ).classes("text-sm text-gray-500")
+            ui.label(
+                "⚠ Starting a run clears this project's existing output folder first - old "
+                "results aren't left behind to potentially get mixed into the new ones."
+            ).classes("text-xs text-orange-600")
+            config_dirty_warning = ui.label(
+                "⚠ The Configuration tab has unsaved changes - Run processing uses what's saved "
+                "in config.toml, not your edits. Save changes there first if you want them included."
+            ).classes("text-sm text-orange-600")
+            config_dirty_warning.visible = False
             run_button = ui.button("Run processing")
             run_button.tooltip("Runs PyOPIA processing on the folder above")
 
@@ -365,6 +423,14 @@ def index() -> None:
     # once real output exists, the stats file itself takes over as the source of truth.
     chosen_versions_this_session: dict[str, str] = {}
 
+    def set_config_dirty(dirty: bool) -> None:
+        """Flag whether the Configuration tab has edits not yet written to config.toml -
+        shown on the Process tab specifically, since that's the moment it actually
+        matters: Run processing uses whatever's on disk, not live widget values (unlike
+        Preview, which reads current widget values directly - see build_config_from_widgets).
+        """
+        config_dirty_warning.visible = dirty
+
     def set_status(text: str, *, busy: bool) -> None:
         status_label.set_text(text)
         spinner.visible = busy
@@ -390,16 +456,10 @@ def index() -> None:
     async def resolve_run_image(project_dir: Path) -> str | None:
         """Which PyOPIA image to process `project_dir` with, or None if the user cancelled.
 
-        Never picks a version automatically if one's already in play: if this project has
-        existing output, reuses exactly the version that produced it, so reprocessing or
-        resuming a dataset never silently switches versions partway through. A project with
-        no output yet - whether brand new or pointed at pre-existing, never-processed data -
-        gets the same explicit choice as on_create's version picker, for the same reason:
-        someone may deliberately want to match a different project's version. But if that
-        choice was already made this session (e.g. moments ago at create time) and nothing's
-        been processed since, reuse it silently rather than asking again immediately - once
-        real output exists, `pinned` below takes over as the source of truth as usual, so
-        this only bridges the gap up to the first successful run, not the whole session.
+        If the project has existing output, reuses exactly the version that produced it,
+        so reprocessing never silently switches versions partway through. Otherwise asks
+        explicitly (same picker as on_create), unless that choice was already made earlier
+        this session, in which case it's reused silently rather than asked again.
         """
         if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
             return docker_client.PYOPIA_IMAGE
@@ -489,10 +549,36 @@ def index() -> None:
                     # cancelled or the app is shutting down - nothing to show, and no
                     # error either, since there's likely no page left to show it on.
                     return
-                ui.label(
-                    f"{summary.particle_count} particles found across "
-                    f"{summary.images_with_particles} images with detected particles"
-                ).classes("text-md")
+                # images_with_particles is *not* "images processed": PyOPIA's own
+                # write_stats() writes nothing at all for an image with zero
+                # detections, so that case is indistinguishable from "wasn't
+                # processed" using the stats file alone. Cross-checking against the
+                # project's current raw file count (best effort - falls back to the
+                # old wording if that count can't be read, or is smaller than
+                # images_with_particles) makes that distinction clear instead of
+                # reading like a processing shortfall.
+                total_raw_files = None
+                try:
+                    raw_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                    raw_files_pattern = (raw_config.get("general") or {}).get("raw_files")
+                    if raw_files_pattern:
+                        raw_paths = await nicegui_run.io_bound(
+                            docker_client.list_raw_files, project_dir, raw_files_pattern
+                        )
+                        total_raw_files = len(raw_paths)
+                except (OSError, tomllib.TOMLDecodeError):
+                    pass
+                if total_raw_files and total_raw_files >= summary.images_with_particles:
+                    if total_raw_files == summary.images_with_particles:
+                        images_phrase = f"across all {total_raw_files} raw images"
+                    else:
+                        images_phrase = (
+                            f"across {summary.images_with_particles} of {total_raw_files} raw images "
+                            "(the rest had none detected)"
+                        )
+                else:
+                    images_phrase = f"across {summary.images_with_particles} images with detected particles"
+                ui.label(f"{summary.particle_count} particles found {images_phrase}").classes("text-md")
                 ui.label(f"d50 (median particle size): {summary.d50_microns:.1f} µm").classes("text-md")
                 # The size bins are log-spaced (get_size_bins() - each ~1.18x the last), so
                 # a log x-axis is what makes them appear evenly spaced, matching the data's
@@ -530,9 +616,21 @@ def index() -> None:
                 # aspect-ratio) - override it inline, which takes precedence over both.
                 ui.echart(chart_options).classes("w-full max-w-2xl aspect-square").style("height: auto")
 
+    # Published by refresh_config() each time it (re)builds the Configuration tab's
+    # widgets, so the Preview tab can read current - possibly unsaved - parameter
+    # values without a second, duplicate parameter-editing UI. "build_config" is None
+    # whenever there's no valid, loaded config to build one from.
+    config_widgets_state: dict[str, Path | Callable[[], dict | None] | None] = {
+        "project_dir": None,
+        "build_config": None,
+    }
+
     async def refresh_config(project_dir: Path) -> None:
         """(Re)build the Configuration tab's content from the project's current config.toml."""
         config_container.clear()
+        config_widgets_state["project_dir"] = None
+        config_widgets_state["build_config"] = None
+        set_config_dirty(False)  # a fresh load from disk is clean by definition
         if docker_client.validate_project(project_dir) is not None:
             with config_container:
                 ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
@@ -557,6 +655,7 @@ def index() -> None:
                 confirmed, params = await _confirm_generate_config(project_dir, config)
                 if not confirmed or params is None:
                     return
+                classifier_enabled = params.pop("classifier_enabled")
                 image = await image_for_existing_project(project_dir)
                 set_status("Generating default config…", busy=True)
                 command = docker_client.generate_config_command(project_dir, image=image, **params)
@@ -566,6 +665,15 @@ def index() -> None:
                     return
                 generated_path = project_dir / f"{params['instrument']}-config.toml"
                 generated_path.replace(project_dir / "config.toml")
+                if not classifier_enabled:
+                    # generate-config always emits an active [steps.classifier] table,
+                    # even with a blank model_path - Classify.__init__ loads a model
+                    # unconditionally, so a blank path breaks pipeline construction
+                    # outright. Move it out of the active steps table so the file that
+                    # actually lands as config.toml never has a broken step in it.
+                    written = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                    written = docker_client.set_step_enabled(written, "classifier", enabled=False)
+                    await nicegui_run.io_bound(docker_client.write_config, project_dir, written)
                 set_status("Default config generated", busy=False)
                 ui.notify("Default config generated", type="positive")
                 await refresh_config(project_dir)
@@ -577,16 +685,27 @@ def index() -> None:
                     "Overwrite this project's config.toml with PyOPIA's own bare defaults for a chosen instrument type"
                 )
 
-            raw_files_input = ui.input("raw_files", value=general.get("raw_files", "")).classes("w-full")
-            pixel_size_input = ui.number("pixel_size (µm/pixel)", value=general.get("pixel_size")).classes("w-full")
+            def mark_dirty(*_args: object) -> None:
+                set_config_dirty(True)
+
+            def track(element: ui.element) -> ui.element:
+                element.on_value_change(mark_dirty)
+                return element
+
+            raw_files_input = track(ui.input("raw_files", value=general.get("raw_files", "")).classes("w-full"))
+            pixel_size_input = track(
+                ui.number("pixel_size (µm/pixel)", value=general.get("pixel_size")).classes("w-full")
+            )
             ui.label(
                 "⚠ Verify this matches your actual instrument/lens setup - pixel size varies per "
                 "physical instrument (holo setups especially have many sub-variants) and isn't "
                 "something pyopia-gui can check for you."
             ).classes("text-xs text-orange-600 -mt-3")
-            log_level_select = ui.select(_GENERAL_LOG_LEVELS, value=general.get("log_level", "INFO"), label="log_level")
+            log_level_select = track(
+                ui.select(_GENERAL_LOG_LEVELS, value=general.get("log_level", "INFO"), label="log_level")
+            )
             log_level_select.classes("w-full")
-            log_file_input = ui.input("log_file", value=general.get("log_file") or "").classes("w-full")
+            log_file_input = track(ui.input("log_file", value=general.get("log_file") or "").classes("w-full"))
             log_file_input.tooltip("Leave blank to log to the console instead of a file")
 
             ui.separator()
@@ -600,59 +719,101 @@ def index() -> None:
             # or "raw" for a list/dict/etc shown as TOML-literal text) - kept per-step so
             # save_changes() knows how to read each field back without re-guessing its type.
             step_inputs: dict[str, dict[str, tuple[ui.element, object]]] = {}
+            # name -> the "Enable this step" switch shown above each step's expansion -
+            # whichever table (steps vs steps_disabled) it ends up in on save follows this,
+            # not which table it was originally loaded from.
+            step_enabled: dict[str, ui.switch] = {}
+            # name -> that step's introspected field schema (has_default/default per field) -
+            # build_config_from_widgets() needs this to validate a step being enabled
+            # actually has every required field filled in, not just to build the input widgets.
+            step_schema_fields: dict[str, list[dict]] = {}
 
             steps = config.get("steps") if isinstance(config.get("steps"), dict) else {}
+            disabled_steps = config.get("steps_disabled") if isinstance(config.get("steps_disabled"), dict) else {}
+            # For pipeline_class lookup in build_config_from_widgets() regardless of which
+            # table a step currently lives in - a step is never in both at once.
+            all_steps_by_name = {**steps, **disabled_steps}
 
             async def load_steps() -> None:
                 schema = await nicegui_run.io_bound(docker_client.introspect_config_steps, project_dir)
                 steps_spinner.visible = False
+                active_schema = schema.get("steps", {}) if schema else {}
+                disabled_schema = schema.get("steps_disabled", {}) if schema else {}
+
+                def render_step(step_name: str, step: dict, info: dict, *, enabled: bool) -> None:
+                    can_toggle = step_name in _ORDER_INSENSITIVE_STEP_NAMES
+                    if can_toggle:
+                        switch = track(ui.switch("Enable this step", value=enabled))
+                        step_enabled[step_name] = switch
+                    step_schema_fields[step_name] = info.get("fields", [])
+                    caption = step["pipeline_class"] if enabled else f"{step['pipeline_class']} (disabled)"
+                    expansion = ui.expansion(step_name, caption=caption).classes("w-full border rounded")
+                    if not enabled:
+                        expansion.classes("opacity-50")
+                    with expansion:
+                        if info.get("summary"):
+                            ui.label(info["summary"]).classes("text-sm text-gray-600")
+                        fields = step_inputs.setdefault(step_name, {})
+                        if "fields" in info:
+                            if not info["fields"]:
+                                ui.label("No configurable options for this step.").classes("text-xs text-gray-500")
+                            for field in info["fields"]:
+                                name = field["name"]
+                                current = field["current_value"]
+                                value = current if current is not None else field["default"]
+                                with ui.column().classes("w-full gap-0"):
+                                    if isinstance(value, bool):
+                                        element = ui.checkbox(name, value=value)
+                                    elif isinstance(value, int | float):
+                                        element = ui.number(name, value=value).classes("w-full")
+                                    elif isinstance(value, str) or value is None:
+                                        element = ui.input(name, value=value or "").classes("w-full")
+                                    else:
+                                        element = ui.input(name, value=_text_from_toml_value(value)).classes("w-full")
+                                        value = "raw"
+                                    if field["description"]:
+                                        ui.label(field["description"]).classes("text-xs text-gray-500")
+                                track(element)
+                                fields[name] = (element, type(value) if value != "raw" else "raw")
+                        else:
+                            # Introspection failed for this step - fall back to bare
+                            # key/value text editing rather than blocking the whole tab.
+                            if "error" in info:
+                                ui.label(f"Couldn't introspect this step: {info['error']}").classes("text-xs text-red")
+                            for name, current in step.items():
+                                if name == "pipeline_class":
+                                    continue
+                                shown = current if isinstance(current, str) else _text_from_toml_value(current)
+                                fields[name] = (track(ui.input(name, value=shown).classes("w-full")), "raw")
+
                 with steps_column:
                     for step_name, step in steps.items():
                         if not isinstance(step, dict) or "pipeline_class" not in step:
                             continue
-                        info = schema.get(step_name, {})
-                        with ui.expansion(step_name, caption=step["pipeline_class"]).classes("w-full border rounded"):
-                            if info.get("summary"):
-                                ui.label(info["summary"]).classes("text-sm text-gray-600")
-                            fields = step_inputs.setdefault(step_name, {})
-                            if "fields" in info:
-                                if not info["fields"]:
-                                    ui.label("No configurable options for this step.").classes("text-xs text-gray-500")
-                                for field in info["fields"]:
-                                    name = field["name"]
-                                    current = field["current_value"]
-                                    value = current if current is not None else field["default"]
-                                    with ui.column().classes("w-full gap-0"):
-                                        if isinstance(value, bool):
-                                            element = ui.checkbox(name, value=value)
-                                        elif isinstance(value, int | float):
-                                            element = ui.number(name, value=value).classes("w-full")
-                                        elif isinstance(value, str) or value is None:
-                                            element = ui.input(name, value=value or "").classes("w-full")
-                                        else:
-                                            element = ui.input(name, value=_text_from_toml_value(value)).classes(
-                                                "w-full"
-                                            )
-                                            value = "raw"
-                                        if field["description"]:
-                                            ui.label(field["description"]).classes("text-xs text-gray-500")
-                                    fields[name] = (element, type(value) if value != "raw" else "raw")
-                            else:
-                                # Introspection failed for this step - fall back to bare
-                                # key/value text editing rather than blocking the whole tab.
-                                if "error" in info:
-                                    ui.label(f"Couldn't introspect this step: {info['error']}").classes(
-                                        "text-xs text-red"
-                                    )
-                                for name, current in step.items():
-                                    if name == "pipeline_class":
-                                        continue
-                                    shown = current if isinstance(current, str) else _text_from_toml_value(current)
-                                    fields[name] = (ui.input(name, value=shown).classes("w-full"), "raw")
+                        render_step(step_name, step, active_schema.get(step_name, {}), enabled=True)
+                    for step_name, step in disabled_steps.items():
+                        if not isinstance(step, dict) or "pipeline_class" not in step:
+                            continue
+                        if step_name not in _ORDER_INSENSITIVE_STEP_NAMES:
+                            # Shouldn't happen via this UI (only order-insensitive steps
+                            # can be disabled through it) - if config.toml was hand-edited
+                            # to put something else here, still show it so it isn't
+                            # invisible, just without a switch (matches the "no toggle
+                            # for order-sensitive steps" rule, whichever table it's in).
+                            render_step(step_name, step, disabled_schema.get(step_name, {}), enabled=True)
+                            continue
+                        render_step(step_name, step, disabled_schema.get(step_name, {}), enabled=False)
 
             background_tasks.create(load_steps(), name="config-introspect")
 
-            async def save_changes() -> None:
+            def build_config_from_widgets() -> dict | None:
+                """The config dict implied by the Configuration tab's current widget
+                values - not necessarily what's saved to config.toml. Returns None
+                (after ui.notify-ing the parse error) if a "raw" TOML-literal field
+                fails to parse. Published via config_widgets_state so the Preview tab
+                can read live, possibly-unsaved parameter values without a second,
+                duplicate parameter-editing UI.
+                """
                 updated: dict = {
                     "general": {
                         "raw_files": raw_files_input.value,
@@ -664,7 +825,7 @@ def index() -> None:
                 if log_file_input.value:
                     updated["general"]["log_file"] = log_file_input.value
                 for step_name, fields in step_inputs.items():
-                    step_config = {"pipeline_class": steps[step_name]["pipeline_class"]}
+                    step_config = {"pipeline_class": all_steps_by_name[step_name]["pipeline_class"]}
                     for name, (element, kind) in fields.items():
                         if kind is bool:
                             step_config[name] = element.value
@@ -677,17 +838,60 @@ def index() -> None:
                                 step_config[name] = _toml_value_from_text(element.value)
                             except tomllib.TOMLDecodeError as e:
                                 ui.notify(f"{step_name}.{name}: {e}", type="negative")
-                                return
+                                return None
                         else:
+                            # An empty text box for a field whose real default is Python
+                            # None (not "") means "leave this unset", not "set it to the
+                            # empty string" - PyOPIA steps like StatsToDisc guard on
+                            # `is not None`, so a written "" is treated as set and can
+                            # crash trying to use it as a value. Omit the key entirely
+                            # instead, so PyOPIA's own None default applies.
+                            field_info = next(
+                                (f for f in step_schema_fields.get(step_name, []) if f["name"] == name), None
+                            )
+                            omit_when_blank = field_info is not None and field_info.get("default") is None
+                            if element.value == "" and omit_when_blank:
+                                continue
                             step_config[name] = element.value
-                    updated["steps"][step_name] = step_config
+                    switch = step_enabled.get(step_name)
+                    if switch is None:
+                        # Order-sensitive step - no switch, always active (matches
+                        # this project's behaviour before the enable/disable feature
+                        # existed: written as-is, no "is this blank?" validation gate).
+                        updated["steps"][step_name] = step_config
+                        continue
+                    enabled = switch.value
+                    if enabled:
+                        for field in step_schema_fields.get(step_name, []):
+                            if field["has_default"]:
+                                continue
+                            value = step_config.get(field["name"])
+                            if value is None or value == "":
+                                ui.notify(
+                                    f"{step_name}.{field['name']} needs a value before this step can be enabled",
+                                    type="negative",
+                                )
+                                return None
+                        updated["steps"][step_name] = step_config
+                    else:
+                        updated.setdefault("steps_disabled", {})[step_name] = step_config
+                return updated
+
+            async def save_changes() -> None:
+                updated = build_config_from_widgets()
+                if updated is None:
+                    return
                 try:
                     await nicegui_run.io_bound(docker_client.write_config, project_dir, updated)
                 except OSError as e:
                     ui.notify(f"Couldn't save config.toml: {e}", type="negative")
                     return
                 ui.notify("Configuration saved", type="positive")
-                await refresh_project_state()
+                set_config_dirty(False)
+                await refresh_project_state(is_project_change=False)
+
+            config_widgets_state["project_dir"] = project_dir
+            config_widgets_state["build_config"] = build_config_from_widgets
 
             ui.button("Save changes", on_click=save_changes).classes("mt-2")
 
@@ -725,7 +929,7 @@ def index() -> None:
                 )
                 return
 
-            raw_paths = sorted(project_dir.glob(raw_files_pattern))
+            raw_paths = docker_client.list_raw_files(project_dir, raw_files_pattern)
             if not raw_paths:
                 ui.label(f"No raw files found matching '{raw_files_pattern}'.").classes("text-sm text-gray-500")
                 return
@@ -784,6 +988,10 @@ def index() -> None:
                         thumb_path = docker_client.thumbnail_path(project_dir, raw_path)
                         if thumb_path.is_file():
                             ui.image(thumb_path).classes("w-32 h-32 object-cover rounded")
+                            preview_link = ui.button("Preview →", on_click=lambda p=raw_path: use_in_preview(p)).props(
+                                "flat dense size=sm"
+                            )
+                            preview_link.tooltip("Use this image on the Preview tab")
                     ui.label(raw_path.name).classes("text-xs text-gray-500 break-all text-center")
 
                 grid.clear()
@@ -844,12 +1052,175 @@ def index() -> None:
 
     tabs.on_value_change(lambda: background_tasks.create(load_explorer_if_needed(), name="explorer-lazy-load"))
 
-    async def refresh_project_state() -> None:
+    # "run_dir" tracks the on-disk folder (project_dir / PREVIEW_DIR_NAME / <run id>)
+    # holding the most recent successful preview's overlay/slice images, so it can be
+    # deleted once a newer run's images have replaced it on screen - never before, so
+    # a still-displayed image is never pulled out from under the browser mid-view.
+    preview_state: dict[str, Path | None] = {"project_dir": None, "selected_sample": None, "run_dir": None}
+
+    async def use_in_preview(raw_path: Path) -> None:
+        preview_state["selected_sample"] = raw_path
+        tabs.value = "preview"
+        if preview_state["project_dir"] is not None:
+            await refresh_preview(preview_state["project_dir"])
+
+    async def refresh_preview(project_dir: Path) -> None:
+        """(Re)build the Preview tab: a prompt to pick a sample image (via the Raw
+        data explorer tab's "Preview →" button on any thumbnail), or the selected
+        sample plus a "Run preview" button and the last result, if any.
+        """
+        preview_container.clear()
+        if docker_client.validate_project(project_dir) is not None:
+            with preview_container:
+                ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
+                ui.label("No valid project selected.").classes("text-sm text-gray-500")
+            return
+
+        def go_to_explorer() -> None:
+            tabs.value = "explorer"
+
+        with preview_container:
+            ui.label(f"Project: {project_dir}").classes("font-mono text-sm text-gray-500 break-all")
+            sample = preview_state["selected_sample"]
+            if sample is None:
+                ui.label("Pick a sample image from the Raw data explorer tab first.").classes("text-sm text-gray-500")
+                ui.button("Go to Raw data explorer", on_click=go_to_explorer)
+                return
+
+            ui.label(sample.name).classes("text-sm font-medium")
+            thumb_path = docker_client.thumbnail_path(project_dir, sample)
+            if thumb_path.is_file():
+                ui.image(thumb_path).classes("w-32 h-32 object-cover rounded")
+
+            result_container = ui.column().classes("w-full gap-2")
+
+            def render_result(result: dict) -> None:
+                result_container.clear()
+                overlay_path = result.get("overlay_path")
+                slice_paths = result.get("slice_paths")
+                z_values = result.get("z_values")
+                if overlay_path is not None:
+                    preview_state["run_dir"] = overlay_path.parent
+                elif slice_paths:
+                    preview_state["run_dir"] = slice_paths[0].parent
+                with result_container:
+                    if result["background_step_skipped"]:
+                        ui.label(
+                            "⚠ Background correction was skipped for this preview - the project "
+                            "doesn't have enough other raw files to build a real background "
+                            "estimate alongside this one (it needs several images, same as a real "
+                            "run would). Treat this preview's segmentation/stats as approximate."
+                        ).classes("text-xs text-orange-600")
+                    if slice_paths:
+                        start_index = len(slice_paths) // 2
+                        slice_image = ui.image(slice_paths[start_index]).classes(
+                            "w-full max-w-2xl border border-gray-300"
+                        )
+                        depth_label = ui.label().classes("text-sm text-gray-500")
+
+                        def show_slice(index: int) -> None:
+                            slice_image.set_source(slice_paths[index])
+                            if z_values:
+                                depth_label.set_text(f"Depth: {z_values[index]:.2f} mm")
+                            else:
+                                depth_label.set_text(f"Slice {index + 1} of {len(slice_paths)}")
+
+                        ui.slider(
+                            min=0,
+                            max=len(slice_paths) - 1,
+                            step=1,
+                            value=start_index,
+                            on_change=lambda e: show_slice(int(e.value)),
+                        )
+                        show_slice(start_index)
+                        ui.label(
+                            "Raw reconstruction at each depth - dragging redraws instantly, "
+                            "no particle outlines shown here."
+                        ).classes("text-xs text-gray-500")
+                    if overlay_path is not None and overlay_path.is_file():
+                        ui.image(overlay_path).classes("w-full max-w-2xl border border-gray-300")
+                        ui.label("Detected particles").classes("text-xs text-gray-500")
+                    ui.label(f"{result['particle_count']} particle(s) found").classes("text-md")
+                    if result["d50_microns"] is not None:
+                        ui.label(f"d50 (median particle size): {result['d50_microns']:.1f} µm").classes("text-md")
+                    else:
+                        ui.label("d50: n/a - no particles found").classes("text-md")
+                    if result["saturation"] is not None:
+                        ui.label(f"Saturation: {result['saturation']:.1f}%").classes("text-md")
+
+            async def run_preview() -> None:
+                build_config = config_widgets_state["build_config"]
+                if build_config is None or config_widgets_state["project_dir"] != project_dir:
+                    ui.notify("Configuration is still loading - try again in a moment", type="warning")
+                    return
+                config = build_config()
+                if config is None:
+                    return  # a bad "raw" field already notified the user, same as save_changes()
+                run_button.disable()
+                image = await resolve_run_image(project_dir)
+                if image is None:
+                    run_button.enable()
+                    return
+
+                # Real background correction needs several real raw files to seed its
+                # moving-average stack - gather as many as the configured step actually
+                # needs (preferring files preceding this sample, falling back to
+                # following ones too if needed - see select_background_context). Falls
+                # back to no context (preview_pipeline substitutes the step away
+                # instead) if there aren't enough, or general.raw_files isn't set.
+                context_raw_paths: list[Path] = []
+                required_context = docker_client.required_background_context(config)
+                if required_context > 0:
+                    general = config.get("general") if isinstance(config.get("general"), dict) else {}
+                    raw_files_pattern = general.get("raw_files")
+                    if raw_files_pattern:
+                        raw_paths = docker_client.list_raw_files(project_dir, raw_files_pattern)
+                        context_raw_paths = docker_client.select_background_context(raw_paths, sample, required_context)
+
+                set_status("Running preview…", busy=True)
+
+                def on_preview_progress(message: str) -> None:
+                    set_status(f"Running preview… {message}", busy=True)
+
+                result = await docker_client.preview_pipeline(
+                    project_dir,
+                    config,
+                    sample,
+                    image,
+                    on_progress=on_preview_progress,
+                    context_raw_paths=context_raw_paths,
+                )
+                run_button.enable()
+                if not result["ok"]:
+                    message = docker_client.interpret_preview_error(result["error"]) or result["error"]
+                    log.push(f"→ preview error: {message}", classes="text-yellow-300 font-bold")
+                    set_status(message, busy=False)
+                    ui.notify(message, type="negative")
+                    return
+                set_status("Preview ready", busy=False)
+                old_run_dir = preview_state["run_dir"]
+                render_result(result)
+                if old_run_dir is not None and old_run_dir.is_dir():
+                    shutil.rmtree(old_run_dir, ignore_errors=True)
+
+            run_button = ui.button("Run preview", on_click=run_preview)
+            run_button.tooltip(
+                "Runs the current processing parameters - including any unsaved "
+                "Configuration tab edits - against this one image only"
+            )
+
+    async def refresh_project_state(*, is_project_change: bool = True) -> None:
         """Update tab availability for the current project folder, and jump to Results
         if it already has output - opening an already-processed project should show
         whatever's available immediately, not require a fresh run to see it. This jump
         happens before Configuration's own (slower) content load, so it's never delayed
         behind it - Explorer's own content loads lazily instead, see above.
+
+        `is_project_change` distinguishes a real project-folder change from a
+        save-triggered refresh of the *same* project (`save_changes()` passes
+        `is_project_change=False`) - jumping to Results, or silently clearing
+        whatever sample image was picked on the Preview tab, right after clicking
+        Save changes would be jarring and isn't what a save is actually for.
         """
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         process_project_label.set_text(f"Project: {project_dir}")
@@ -857,8 +1228,19 @@ def index() -> None:
         process_tab.set_enabled(is_valid)
         config_tab.set_enabled(is_valid)
         explorer_tab.set_enabled(is_valid)
+        preview_tab.set_enabled(is_valid)
         explorer_state["project_dir"] = project_dir if is_valid else None
         explorer_state["loaded_for"] = None  # force a fresh load next time Explorer is opened
+        if is_project_change:
+            # A sample picked in a previous project (or a previous visit to this
+            # one) is no longer meaningful once the project folder changes - reset
+            # it rather than let a stale selection silently persist across an
+            # unrelated project.
+            preview_state["project_dir"] = project_dir if is_valid else None
+            preview_state["selected_sample"] = None
+        elif not is_valid:
+            preview_state["project_dir"] = None
+            preview_state["selected_sample"] = None
 
         try:
             has_results = is_valid and (project_dir / docker_client.stats_filename(project_dir)).is_file()
@@ -868,12 +1250,14 @@ def index() -> None:
         if has_results:
             results_tab.enable()
             await refresh_results(project_dir)
-            tabs.value = "results"
+            if is_project_change:
+                tabs.value = "results"
         else:
             results_tab.disable()
 
         if is_valid:
             await refresh_config(project_dir)
+        await refresh_preview(project_dir)
         await load_explorer_if_needed()  # covers already being on the Explorer tab
 
     folder_input.on_value_change(lambda: background_tasks.create(refresh_project_state(), name="project-state"))
@@ -932,12 +1316,23 @@ def index() -> None:
             run_button.enable()
             return
 
+        # Clear this project's real output folder before running, not just the UI's own
+        # stale state below - PyOPIA's own per-image STATS output (used when the
+        # config's output step has append=false) has no way to tell a fresh run's files
+        # apart from an old run's when merging: merge-mfdata just globs every
+        # *Image-D*-STATS.nc file sitting in the folder, with no freshness check at all.
+        # A narrowed raw_files pattern, a removed/renamed raw image, or a run that failed
+        # partway through could otherwise leave stale per-image files that silently get
+        # merged into what looks like a fresh, current result. PyOPIA's own
+        # conflict-rename safety net only covers the single combined -STATS.nc file,
+        # not the per-image ones.
+        output_dir = await nicegui_run.io_bound(docker_client.output_directory, project_dir)
+        await nicegui_run.io_bound(shutil.rmtree, output_dir, ignore_errors=True)
+
         # Clear everything left over from a previous run, now that this one's actually
         # starting - otherwise a new run can look like it's continuing an old one, or a
         # failed rerun can leave a stale (and no longer accurate) montage/stats on the
-        # Results tab. The old stats file itself isn't deleted here (only overwritten if
-        # this run succeeds), so this has to be an explicit clear, not just a re-check of
-        # disk state - a stale file would otherwise still be found and redisplayed as-is.
+        # Results tab.
         log.clear()
         results_container.clear()
         with results_container:
@@ -950,14 +1345,21 @@ def index() -> None:
             return
         ui.notify("Processing complete", type="positive")
 
-        set_status("Merging results…", busy=True)
-        merge_exit_code, merge_lines = await run_streamed_to_log(
-            docker_client.merge_mfdata_command(project_dir, image=image)
-        )
-        if merge_exit_code != 0:
-            report_failure(merge_lines, "Merging processed stats failed")
-            run_button.enable()
-            return
+        # merge-mfdata combines per-image files into one - only meaningful when the
+        # output step's append=false (per-image files). With the default append=true,
+        # `process` already wrote the single combined file directly; there's nothing
+        # to merge, and PyOPIA's own merge-mfdata raises ZeroDivisionError against an
+        # empty file list rather than a no-op, so it must be skipped in that case.
+        uses_append = await nicegui_run.io_bound(docker_client.output_uses_append, project_dir)
+        if not uses_append:
+            set_status("Merging results…", busy=True)
+            merge_exit_code, merge_lines = await run_streamed_to_log(
+                docker_client.merge_mfdata_command(project_dir, image=image)
+            )
+            if merge_exit_code != 0:
+                report_failure(merge_lines, "Merging processed stats failed")
+                run_button.enable()
+                return
 
         # A previous montage was built from whatever stats existed before this run -
         # now that reprocessing has produced fresh stats, that montage no longer
