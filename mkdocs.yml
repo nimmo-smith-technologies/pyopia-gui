@@ -9,5 +9,6 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Installing pyopia-gui: installing.md
   - Using pyopia-gui: usage.md
   - Design decisions: decisions/INDEX.md

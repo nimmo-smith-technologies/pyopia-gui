@@ -123,7 +123,7 @@ async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[boo
             dialog.submit(True)
 
         with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+            ui.button("Cancel", on_click=lambda: dialog.submit(False))
             ui.button("Generate", on_click=try_submit)
     confirmed = bool(await dialog)
     if not confirmed:
@@ -174,51 +174,65 @@ async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
                 "for consistency, even after newer ones become available"
             )
         with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+            ui.button("Cancel", on_click=lambda: dialog.submit(False))
             ui.button("Create here", on_click=lambda: dialog.submit(True))
     confirmed = bool(await dialog)
     chosen_version = version_select.value if (confirmed and version_select) else None
     return confirmed, chosen_version
 
 
-def _open_folder_browser(folder_input: ui.input) -> None:
-    """Open a dialog for browsing the server's filesystem and picking a folder."""
-    start_dir = Path(folder_input.value.strip()).expanduser()
+def _render_folder_browser(start_dir: Path) -> dict[str, Path]:
+    """Render a path label plus a clickable folder listing, for use inside an
+    already-open `ui.dialog()`/`ui.card()` context - shared by `_open_folder_browser`
+    and `_choose_save_location` below, rather than duplicating the same navigation
+    logic for each.
+
+    Falls back to `start_dir`'s parent, then the home folder, if `start_dir` doesn't
+    exist. Returns a live `{"path": Path}` dict for the currently browsed-to folder -
+    a dict (not a bare `Path`) since it's mutated by the listing's own click handlers
+    after this function returns, so the caller can still read the current value later
+    (e.g. from a "Save here" button's own `on_click`).
+    """
     if not start_dir.is_dir():
         start_dir = start_dir.parent if start_dir.parent.is_dir() else Path.home()
     current = {"path": start_dir}
+    path_label = ui.label().classes("text-sm text-gray-500")
+    listing = ui.column().classes("w-full max-h-96 overflow-y-auto")
 
-    with ui.dialog() as dialog, ui.card().classes("w-full max-w-lg"):
-        path_label = ui.label().classes("text-sm text-gray-500")
-        listing = ui.column().classes("w-full max-h-96 overflow-y-auto")
-
-        def go_to(path: Path) -> None:
-            current["path"] = path
-            refresh()
-
-        def refresh() -> None:
-            path_label.set_text(str(current["path"]))
-            listing.clear()
-            with listing, ui.list().props("bordered separator"):
-                if current["path"].parent != current["path"]:
-                    with (
-                        ui.item(on_click=lambda: go_to(current["path"].parent))
-                        .props("clickable")
-                        .tooltip("Go up to the parent folder")
-                    ):
-                        ui.item_label("⬆ ..")
-                try:
-                    subdirs = sorted(p for p in current["path"].iterdir() if p.is_dir() and not p.name.startswith("."))
-                except PermissionError:
-                    ui.item_label("Permission denied").classes("text-red")
-                    return
-                for entry in subdirs:
-                    with ui.item(on_click=lambda e=entry: go_to(e)).props("clickable"):
-                        ui.item_label(f"📁 {entry.name}")
-
+    def go_to(path: Path) -> None:
+        current["path"] = path
         refresh()
+
+    def refresh() -> None:
+        path_label.set_text(str(current["path"]))
+        listing.clear()
+        with listing, ui.list().props("bordered separator"):
+            if current["path"].parent != current["path"]:
+                with (
+                    ui.item(on_click=lambda: go_to(current["path"].parent))
+                    .props("clickable")
+                    .tooltip("Go up to the parent folder")
+                ):
+                    ui.item_label("⬆ ..")
+            try:
+                subdirs = sorted(p for p in current["path"].iterdir() if p.is_dir() and not p.name.startswith("."))
+            except PermissionError:
+                ui.item_label("Permission denied").classes("text-red")
+                return
+            for entry in subdirs:
+                with ui.item(on_click=lambda e=entry: go_to(e)).props("clickable"):
+                    ui.item_label(f"📁 {entry.name}")
+
+    refresh()
+    return current
+
+
+def _open_folder_browser(folder_input: ui.input) -> None:
+    """Open a dialog for browsing the server's filesystem and picking a folder."""
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-lg"):
+        current = _render_folder_browser(Path(folder_input.value.strip()).expanduser())
         with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=dialog.close).props("flat").tooltip(
+            ui.button("Cancel", on_click=dialog.close).tooltip(
                 "Close without changing the project folder"
             )
             ui.button(
@@ -227,6 +241,23 @@ def _open_folder_browser(folder_input: ui.input) -> None:
             ).tooltip("Use the folder shown above as the project folder")
 
     dialog.open()
+
+
+async def _choose_save_location(start_dir: Path, default_filename: str) -> Path | None:
+    """Ask the user to pick a folder and filename to save a file to, browsing the
+    server's filesystem starting from `start_dir`. Returns the full destination path,
+    or None if cancelled.
+    """
+    with ui.dialog() as dialog, ui.card().classes("w-full max-w-lg"):
+        current = _render_folder_browser(start_dir)
+        filename_input = ui.input("Filename", value=default_filename).classes("w-full")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(None))
+            ui.button(
+                "Save here",
+                on_click=lambda: dialog.submit(current["path"] / filename_input.value.strip()),
+            ).tooltip("Save to the folder shown above, using the filename to the left")
+    return await dialog
 
 
 async def _choose_version(versions: list[str]) -> str | None:
@@ -242,7 +273,7 @@ async def _choose_version(versions: list[str]) -> str | None:
         ).classes("text-sm text-gray-500")
         version_select = ui.select(versions, value=versions[0], label="PyOPIA version").classes("w-full")
         with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat")
+            ui.button("Cancel", on_click=lambda: dialog.submit(None))
             ui.button("Use this version", on_click=lambda: dialog.submit(version_select.value))
     return await dialog
 
@@ -268,7 +299,7 @@ async def _confirm_pinned_version(pinned: str, newest: str | None) -> bool:
                 "text-sm text-gray-500"
             )
         with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat")
+            ui.button("Cancel", on_click=lambda: dialog.submit(False))
             ui.button("Run processing", on_click=lambda: dialog.submit(True)).mark("confirm-pinned-version")
     return bool(await dialog)
 
@@ -293,7 +324,7 @@ def _show_about_dialog() -> None:
             ui.link("License ↗", LICENSE_URL, new_tab=True)
             ui.link("Third-party licenses ↗", THIRD_PARTY_LICENSES_URL, new_tab=True)
         with ui.row().classes("w-full justify-end"):
-            ui.button("Close", on_click=dialog.close).props("flat")
+            ui.button("Close", on_click=dialog.close)
     dialog.open()
 
 
@@ -447,6 +478,12 @@ def index() -> None:
     # once real output exists, the stats file itself takes over as the source of truth.
     chosen_versions_this_session: dict[str, str] = {}
 
+    # The Results tab's active (column, min, max) aux-data filter, if any - keyed by
+    # str(project_dir), same convention as chosen_versions_this_session above. Not
+    # persisted to config.toml (it's a display/export restriction, not a pipeline
+    # parameter), so it resets on a full page reload, same as other page-session state.
+    results_filter_state: dict[str, tuple[str, float, float] | None] = {}
+
     def set_config_dirty(dirty: bool) -> None:
         """Flag whether the Configuration tab has edits not yet written to config.toml -
         shown on the Process tab specifically, since that's the moment it actually
@@ -536,11 +573,62 @@ def index() -> None:
                     "font-mono text-sm text-gray-500 break-all"
                 )
 
+            aux_columns = await nicegui_run.io_bound(docker_client.aux_data_columns, project_dir)
+            active_filter = results_filter_state.get(str(project_dir))
+
+            if aux_columns:
+
+                async def apply_filter() -> None:
+                    low, high = filter_min_input.value, filter_max_input.value
+                    if low is None or high is None:
+                        ui.notify("Enter both a min and max value to filter by", type="negative")
+                        return
+                    if low > high:
+                        ui.notify("Min must not be greater than max", type="negative")
+                        return
+                    results_filter_state[str(project_dir)] = (filter_column_select.value, float(low), float(high))
+                    await refresh_results(project_dir)
+
+                async def clear_filter() -> None:
+                    results_filter_state[str(project_dir)] = None
+                    await refresh_results(project_dir)
+
+                with ui.row().classes("items-center gap-2"):
+                    filter_column_select = ui.select(
+                        aux_columns, value=(active_filter[0] if active_filter else aux_columns[0]), label="Filter by"
+                    ).classes("w-32")
+                    filter_min_input = ui.number("Min", value=(active_filter[1] if active_filter else None)).classes(
+                        "w-24"
+                    )
+                    filter_max_input = ui.number("Max", value=(active_filter[2] if active_filter else None)).classes(
+                        "w-24"
+                    )
+                    ui.button("Apply filter", on_click=apply_filter).tooltip(
+                        "Restrict the montage, EcoTaxa export, and summary stats below to particles "
+                        "whose aux-data value falls within this range"
+                    )
+                if active_filter:
+                    column, low, high = active_filter
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(f"⚠ Filtered to particles with {column} between {low} and {high}.").classes(
+                            "text-sm text-orange-600"
+                        )
+                        ui.button("Clear filter", on_click=clear_filter).props("dense")
+
+            montage_filename = "montage-filtered.png" if active_filter else "montage.png"
+            montage_path = project_dir / montage_filename
+            ecotaxa_filename = "ecotaxa_export-filtered.zip" if active_filter else "ecotaxa_export.zip"
+            ecotaxa_path = project_dir / ecotaxa_filename
+
             async def generate_montage() -> None:
                 image = await image_for_existing_project(project_dir)
                 set_status("Building montage…", busy=True)
                 command = docker_client.make_montage_command(
-                    project_dir, docker_client.stats_filename(project_dir), image=image
+                    project_dir,
+                    docker_client.stats_filename(project_dir),
+                    image=image,
+                    output_filename=montage_filename,
+                    filter_variable=active_filter,
                 )
                 exit_code, lines = await run_streamed_to_log(command)
                 if exit_code == 0:
@@ -549,22 +637,80 @@ def index() -> None:
                 else:
                     report_failure(lines, "Montage creation failed")
 
-            montage_path = project_dir / "montage.png"
+            async def save_montage_as() -> None:
+                destination = await _choose_save_location(project_dir, montage_filename)
+                if destination is None:
+                    return
+                try:
+                    await nicegui_run.io_bound(shutil.copy, montage_path, destination)
+                except OSError as e:
+                    ui.notify(f"Couldn't save montage: {e}", type="negative")
+                    return
+                ui.notify(f"Montage saved to {destination}", type="positive")
+
             if montage_path.is_file():
                 ui.image(str(montage_path)).classes("w-full max-w-2xl")
                 ui.label(str(montage_path)).classes("font-mono text-xs text-gray-500 break-all")
-                ui.button("Regenerate montage", on_click=generate_montage).tooltip(
-                    "Builds a new montage - particles are placed randomly, so each one looks different "
-                    "even from the same results"
-                )
+                with ui.row().classes("items-center gap-2"):
+                    ui.button("Regenerate montage", on_click=generate_montage).tooltip(
+                        "Builds a new montage - particles are placed randomly, so each one looks "
+                        "different even from the same results"
+                    )
+                    ui.button("Save montage as…", on_click=save_montage_as).tooltip(
+                        "Copy the montage image to a location of your choice"
+                    )
             else:
                 ui.button("Generate montage", on_click=generate_montage).tooltip(
                     "Builds a montage image of the particles found, from this project's existing results"
+                    + (" matching the current filter" if active_filter else "")
                 )
+
+            async def export_to_ecotaxa() -> None:
+                image = await image_for_existing_project(project_dir)
+                set_status("Building EcoTaxa export…", busy=True)
+                command = docker_client.export_to_ecotaxa_command(
+                    project_dir,
+                    docker_client.stats_filename(project_dir),
+                    ecotaxa_filename,
+                    image=image,
+                    filter_variable=active_filter,
+                )
+                exit_code, lines = await run_streamed_to_log(command)
+                if exit_code == 0:
+                    set_status("EcoTaxa export created", busy=False)
+                    await refresh_results(project_dir)
+                else:
+                    report_failure(lines, "EcoTaxa export failed")
+
+            async def save_ecotaxa_export_as() -> None:
+                destination = await _choose_save_location(project_dir, ecotaxa_filename)
+                if destination is None:
+                    return
+                try:
+                    await nicegui_run.io_bound(shutil.copy, ecotaxa_path, destination)
+                except OSError as e:
+                    ui.notify(f"Couldn't save EcoTaxa export: {e}", type="negative")
+                    return
+                ui.notify(f"EcoTaxa export saved to {destination}", type="positive")
+
+            with ui.row().classes("items-center gap-2"):
+                if ecotaxa_path.is_file():
+                    ui.label(str(ecotaxa_path)).classes("font-mono text-xs text-gray-500 break-all")
+                    ui.button("Regenerate EcoTaxa export", on_click=export_to_ecotaxa)
+                    ui.button("Save EcoTaxa export as…", on_click=save_ecotaxa_export_as).tooltip(
+                        "Copy the EcoTaxa export zip to a location of your choice"
+                    )
+                else:
+                    ui.button("Export to EcoTaxa…", on_click=export_to_ecotaxa).tooltip(
+                        "Bundle particle images and stats into a zip file ready to import into "
+                        "https://ecotaxa.obs-vlfr.fr/"
+                    )
 
             try:
                 px_size = docker_client.pixel_size(project_dir)
-                summary = await nicegui_run.io_bound(vendored_stats.summarize, str(stats_path), px_size)
+                summary = await nicegui_run.io_bound(
+                    vendored_stats.summarize, str(stats_path), px_size, active_filter
+                )
             except _STATS_READ_ERRORS as e:
                 ui.label(f"Couldn't compute summary statistics: {e}").classes("text-sm text-red")
             else:
@@ -639,6 +785,26 @@ def index() -> None:
                 # otherwise wins over the aspect-square utility (an explicit height beats
                 # aspect-ratio) - override it inline, which takes precedence over both.
                 ui.echart(chart_options).classes("w-full max-w-2xl aspect-square").style("height: auto")
+
+                async def export_size_distribution_csv() -> None:
+                    destination = await _choose_save_location(project_dir, "size_distribution.csv")
+                    if destination is None:
+                        return
+                    try:
+                        await nicegui_run.io_bound(
+                            docker_client.write_size_distribution_csv,
+                            str(destination),
+                            summary.dias,
+                            summary.number_distribution,
+                        )
+                    except OSError as e:
+                        ui.notify(f"Couldn't export size distribution: {e}", type="negative")
+                        return
+                    ui.notify(f"Size distribution exported to {destination}", type="positive")
+
+                ui.button(
+                    "Export size distribution as CSV…", on_click=export_size_distribution_csv
+                ).tooltip("Save the diameter/particle-count bins shown above to a CSV file")
 
     # Published by refresh_config() each time it (re)builds the Configuration tab's
     # widgets, so the Preview tab can read current - possibly unsaved - parameter
@@ -997,7 +1163,7 @@ def index() -> None:
                         + "."
                     ).classes("text-sm text-orange-600")
                     if original_pattern:
-                        ui.button("Clear subset", on_click=clear_subset).props("flat dense")
+                        ui.button("Clear subset", on_click=clear_subset).props("dense")
 
             page_count = math.ceil(len(raw_paths) / _EXPLORER_PAGE_SIZE)
             state = {"page": 0}
@@ -1021,7 +1187,7 @@ def index() -> None:
             with ui.row().classes("items-center gap-2"):
                 select_all_button = ui.button("Select all on this page")
                 select_all_button.tooltip("e.g. for a quick test run against just this page, rather than everything")
-                clear_selection_button = ui.button("Clear selection").props("flat")
+                clear_selection_button = ui.button("Clear selection")
                 use_subset_button = ui.button("Use selected as raw_files")
                 use_subset_button.tooltip(
                     "Narrow this project to just the selected images - e.g. to process a "
@@ -1112,7 +1278,7 @@ def index() -> None:
                         if thumb_path.is_file():
                             ui.image(thumb_path).classes("w-32 h-32 object-cover rounded")
                             preview_link = ui.button("Preview →", on_click=lambda p=raw_path: use_in_preview(p)).props(
-                                "flat dense size=sm"
+                                "dense size=sm"
                             )
                             preview_link.tooltip("Use this image on the Preview tab")
                     ui.label(raw_path.name).classes("text-xs text-gray-500 break-all text-center")

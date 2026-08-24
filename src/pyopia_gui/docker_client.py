@@ -2,8 +2,10 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import csv
 import importlib
 import inspect
+import itertools
 import json
 import os
 import platform
@@ -299,9 +301,21 @@ def merge_mfdata_command(
     ]
 
 
-def make_montage_command(project_dir: Path, stats_filename: str, image: str = PYOPIA_IMAGE) -> list[str]:
-    """Build the command to create montage.png from a processed STATS.nc file."""
-    return [
+def make_montage_command(
+    project_dir: Path,
+    stats_filename: str,
+    image: str = PYOPIA_IMAGE,
+    output_filename: str = "montage.png",
+    filter_variable: tuple[str, float, float] | None = None,
+) -> list[str]:
+    """Build the command to create a montage from a processed STATS.nc file.
+
+    `filter_variable` maps directly to PyOPIA's own `make-montage --filter-variable
+    name min max` - restricts the montage to particles whose aux-data column `name`
+    (see `aux_data_columns`) falls within `[min, max]`, computed by PyOPIA itself
+    in-memory, without needing a separate filtered STATS.nc file on disk.
+    """
+    command = [
         "docker",
         "run",
         "--rm",
@@ -310,7 +324,43 @@ def make_montage_command(project_dir: Path, stats_filename: str, image: str = PY
         image,
         "make-montage",
         stats_filename,
+        "--output-filename",
+        output_filename,
     ]
+    if filter_variable is not None:
+        name, low, high = filter_variable
+        command += ["--filter-variable", name, str(low), str(high)]
+    return command
+
+
+def export_to_ecotaxa_command(
+    project_dir: Path,
+    stats_filename: str,
+    export_filename: str,
+    image: str = PYOPIA_IMAGE,
+    filter_variable: tuple[str, float, float] | None = None,
+) -> list[str]:
+    """Build the command to bundle particle ROI images and stats into an
+    EcoTaxa-compatible zip (see PyOPIA's own `export-to-ecotaxa`), for import into
+    https://ecotaxa.obs-vlfr.fr/. `export_filename` is written inside `project_dir`
+    (the container can only write within its mounted volume). `filter_variable`
+    restricts the export the same way `make_montage_command`'s own filter does.
+    """
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        *_user_args(),
+        *_volume_args(project_dir),
+        image,
+        "export-to-ecotaxa",
+        stats_filename,
+        export_filename,
+    ]
+    if filter_variable is not None:
+        name, low, high = filter_variable
+        command += ["--filter-variable", name, str(low), str(high)]
+    return command
 
 
 def _load_config(project_dir: Path, config_filename: str) -> dict:
@@ -327,6 +377,14 @@ def write_config(project_dir: Path, config: dict, config_filename: str = "config
     """Write `config` back to the project's config file, overwriting whatever's there."""
     with (project_dir / config_filename).open("wb") as f:
         tomli_w.dump(config, f)
+
+
+def write_size_distribution_csv(csv_path: str, dias, number_distribution) -> None:
+    """Write the Results tab's size-distribution bins/counts to a CSV file."""
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["diameter_um", "particle_count"])
+        writer.writerows(zip(dias, number_distribution, strict=True))
 
 
 def set_step_enabled(config: dict, step_name: str, *, enabled: bool) -> dict:
@@ -376,6 +434,30 @@ def output_directory(project_dir: Path, config_filename: str = "config.toml") ->
     need to act on the folder itself (e.g. clearing stale output before a fresh run).
     """
     return project_dir / (os.path.dirname(_output_datafile(project_dir, config_filename)) or ".")
+
+
+def aux_data_columns(project_dir: Path, config_filename: str = "config.toml") -> list[str]:
+    """The aux-data variable names (e.g. `["depth", "temperature"]`) declared in this
+    project's own `steps.output.auxillary_data_file`, if configured - PyOPIA
+    interpolates these onto each detected particle's timestamp and writes them as
+    extra columns in the stats file (see `pyopia.auxillarydata.AuxillaryData`'s own
+    format: two comment lines, then units/descriptions/names, one column per line -
+    the names row is what's read here, "time" excluded since that's the join key,
+    not a filterable variable).
+
+    Returns [] if no aux-data file is configured, or its header can't be read.
+    """
+    try:
+        config = _load_config(project_dir, config_filename)
+        aux_path = config["steps"]["output"]["auxillary_data_file"]
+    except (KeyError, TypeError, OSError, tomllib.TOMLDecodeError):
+        return []
+    try:
+        with (project_dir / aux_path).open() as f:
+            names_line = next(itertools.islice(f, 4, 5))
+    except (OSError, StopIteration):
+        return []
+    return [name.strip() for name in names_line.strip().split(",") if name.strip() and name.strip() != "time"]
 
 
 def output_uses_append(project_dir: Path, config_filename: str = "config.toml") -> bool:

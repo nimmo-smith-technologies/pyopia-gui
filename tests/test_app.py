@@ -6,7 +6,9 @@ import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 import pytest
+import xarray as xr
 from nicegui import ui
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
@@ -786,6 +788,109 @@ async def test_results_tab_offers_regenerate_when_a_montage_already_exists(
     # actual button count/labels instead.
     button_labels = {button.text for button in user.find(kind=ui.button).elements}
     assert "Generate montage" not in button_labels
+
+
+async def test_results_tab_save_montage_as_copies_to_a_chosen_location(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    (tmp_path / "montage.png").write_bytes(b"an existing montage")
+    exports_dir = tmp_path / "exports"
+    exports_dir.mkdir()
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("Save montage as…")
+
+    user.find(kind=ui.button, content="Save montage as…").click()
+    await asyncio.sleep(0.2)
+    # The dialog's folder listing puts on_click on each ui.item, not its child
+    # ui.item_label - user.find(content=...) only matches an element's own props
+    # (no bubbling to descendants), so the item itself must be found via its label's
+    # parent rather than by content directly.
+    exports_label = user.find(kind=ui.item_label, content="📁 exports").elements.pop()
+    UserInteraction(user, {exports_label.parent_slot.parent}, target=None).click()
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.button, content="Save here").click()
+    await asyncio.sleep(0.2)
+
+    assert (exports_dir / "montage.png").read_bytes() == b"an existing montage"
+
+
+async def test_results_tab_export_size_distribution_writes_a_csv(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: None)
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+
+    summary = vendored_stats.StatsSummary(
+        particle_count=10, images_with_particles=2, d50_microns=42.5, dias=[2.72, 3.21], number_distribution=[1, 2]
+    )
+    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("Export size distribution as CSV…")
+
+    user.find(kind=ui.button, content="Export size distribution as CSV…").click()
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.button, content="Save here").click()
+    await asyncio.sleep(0.2)
+
+    saved = tmp_path / "size_distribution.csv"
+    assert saved.read_text().splitlines() == ["diameter_um,particle_count", "2.72,1", "3.21,2"]
+
+
+async def test_results_tab_aux_filter_narrows_particle_count_and_clears(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: None)
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\npixel_size = 24\n\n'
+        '[steps.output]\noutput_datafile = "processed/demo"\nappend = false\n'
+        'auxillary_data_file = "aux.csv"\n'
+    )
+    (tmp_path / "aux.csv").write_text("% COMMENT\n% COMMENT\n,\n,\ntime,depth\n2026-01-01T00:00:00,1.0\n")
+    (tmp_path / "processed").mkdir()
+    stats_path = tmp_path / "processed" / "demo-STATS.nc"
+    dataset = xr.Dataset(
+        {
+            "equivalent_diameter": ("index", [2.72, 3.21, 4.0]),
+            "timestamp": ("index", pd.to_datetime(["2026-01-01T00:00:00"] * 3)),
+            "depth": ("index", [1.0, 5.0, 9.0]),
+        },
+        coords={"index": [0, 1, 2]},
+    )
+    dataset.to_netcdf(stats_path, engine="h5netcdf")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("Filter by")
+    await user.should_see("3 particles found")
+
+    user.find(kind=ui.number, content="Min").elements.pop().value = 5.0
+    user.find(kind=ui.number, content="Max").elements.pop().value = 9.0
+    user.find(kind=ui.button, content="Apply filter").click()
+    await asyncio.sleep(0.2)
+
+    await user.should_see("2 particles found")
+    await user.should_see("Filtered to particles with depth between 5.0 and 9.0")
+
+    user.find(kind=ui.button, content="Clear filter").click()
+    await asyncio.sleep(0.2)
+
+    await user.should_see("3 particles found")
 
 
 async def test_run_reuses_pinned_version_from_existing_output(

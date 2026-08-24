@@ -100,8 +100,16 @@ class StatsSummary:
     number_distribution: np.ndarray
 
 
-def summarize(stats_path: str, pixel_size: float) -> StatsSummary:
+def summarize(
+    stats_path: str, pixel_size: float, aux_filter: tuple[str, float, float] | None = None
+) -> StatsSummary:
     """Compute the Results tab's summary statistics from a project's own -STATS.nc file.
+
+    `aux_filter`, if given, is an (aux column name, min, max) tuple - e.g.
+    `("depth", 1.5, 10.0")` - restricting the summary to particles whose value for
+    that column (see `docker_client.aux_data_columns`) falls within `[min, max]`,
+    the same restriction `docker_client.make_montage_command`'s own `filter_variable`
+    applies for the montage, so the two stay consistent with each other.
 
     Raises on any read/schema failure (e.g. a stats file from an incompatible PyOPIA
     version, or one still being written by a concurrent run) - the caller is
@@ -109,6 +117,9 @@ def summarize(stats_path: str, pixel_size: float) -> StatsSummary:
     Docker/file-based failures in this app.
     """
     stats = load_stats_as_dataframe(stats_path)
+    if aux_filter is not None:
+        column, low, high = aux_filter
+        stats = stats[stats[column].between(low, high)]
     dias, number_distribution = nd_from_stats(stats, pixel_size)
     volume_distribution = vd_from_nd(number_distribution, dias)
     return StatsSummary(

@@ -81,3 +81,20 @@ def test_summarize_reads_a_real_stats_file_end_to_end(tmp_path: Path) -> None:
     assert summary.images_with_particles == 1
     assert summary.d50_microns > 0
     assert summary.number_distribution.sum() == 3
+
+
+def test_summarize_applies_an_aux_filter(tmp_path: Path) -> None:
+    stats_path = tmp_path / "demo-STATS.nc"
+    dataset = xr.Dataset(
+        {
+            "equivalent_diameter": ("index", [2.72, 3.21, 4.0]),
+            "timestamp": ("index", pd.to_datetime(["2026-01-01T00:00:00"] * 3)),
+            "depth": ("index", [1.0, 5.0, 9.0]),
+        },
+        coords={"index": [0, 1, 2]},
+    )
+    dataset.to_netcdf(stats_path, engine="h5netcdf")
+
+    summary = vendored_stats.summarize(str(stats_path), pixel_size=1.0, aux_filter=("depth", 4.0, 9.0))
+
+    assert summary.particle_count == 2

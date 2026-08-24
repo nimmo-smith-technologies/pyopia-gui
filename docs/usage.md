@@ -1,155 +1,7 @@
 # Using pyopia-gui
 
-pyopia-gui is a graphical front end for [PyOPIA](https://github.com/SINTEF/pyopia), a
-toolbox for processing particle images from ocean instruments (SilCam, holographic
-imaging, UVP). It runs PyOPIA's own Docker image for you and shows you the results,
-without needing to work with config files or a command line.
-
-## Before you start
-
-Whichever way you get pyopia-gui running (see below), you'll need
-**[Docker](https://docs.docker.com/get-started/get-docker/)** installed and running -
-pyopia-gui uses PyOPIA's own Docker image to do the actual image processing. If it
-isn't installed or running, pyopia-gui tells you exactly what to do the first time you
-open it - see [Docker isn't ready yet](#docker-isnt-ready-yet) below.
-
-!!! note "About the PyOPIA image"
-    PyOPIA's own official Docker image is currently private
-    ([tracking issue](https://github.com/SINTEF/pyopia/issues/424)), so pyopia-gui
-    uses a mirror we publish ourselves in the meantime - no extra steps needed, this
-    is handled automatically. See the
-    [README](https://github.com/nimmo-smith-technologies/pyopia-gui#readme) if you'd
-    rather point it at the official image once that's public again, or one you've
-    built yourself.
-
-## Getting pyopia-gui
-
-### Option A: Download the app (no install needed)
-
-No Python or terminal needed for this option. Go to the
-[Releases page](https://github.com/nimmo-smith-technologies/pyopia-gui/releases),
-open the **Assets** section for the release at the top (click it to expand the list
-of downloads - it's collapsed by default), and download the file for your operating
-system:
-
-- **Windows**: download `pyopia-gui.exe` and double-click it.
-- **Mac**: download `pyopia-gui-macos.zip`, unzip it, and double-click
-  `pyopia-gui.app`. **Apple Silicon only for now** - on an Intel Mac, use
-  [Option B](#option-b-run-from-source) instead.
-- **Linux**: download `pyopia-gui-linux.zip`, unzip it, and run `./pyopia-gui`. If it
-  fails to open with a `qt.qpa.plugin: Could not load the Qt platform plugin "xcb"`
-  error, install `libxcb-cursor0` (e.g. `sudo apt install libxcb-cursor0` on
-  Debian/Ubuntu-based distros).
-
-!!! note "This is still an early alpha"
-    The downloadable app is new and less tested than running from source - if you hit
-    something unexpected, [Option B](#option-b-run-from-source) is the more
-    battle-tested path, and we'd appreciate a
-    [bug report](https://github.com/nimmo-smith-technologies/pyopia-gui/issues) either
-    way.
-
-### Option B: Run from source
-
-Needs [uv](https://docs.astral.sh/uv/getting-started/installation/) (a Python package
-manager) installed first. Then, from a terminal, in the pyopia-gui project folder:
-
-```bash
-uv sync --group dev --group docs
-uv run pyopia-gui
-```
-
-This starts pyopia-gui and prints a web address (something like
-`http://localhost:8080`) - open that in your browser.
-
-## Docker isn't ready yet
-
-If Docker isn't installed, or isn't running, pyopia-gui shows you exactly what's wrong
-and what to do about it - the instructions are specific to your operating system
-(Linux, Mac, or Windows). Once you've followed them, click **Recheck**.
-
-A couple of things worth knowing before you start, especially on Windows:
-
-### The Docker Hub account prompt
-
-Docker Desktop's installer asks you to sign in or create a free Docker Hub account.
-pyopia-gui doesn't need this - it never talks to Docker Hub, only to GitHub's
-container registry - so look for a "skip" or "continue without signing in" option.
-If you do create one, it's a low-stakes account: no payment details needed, nothing
-sensitive stored there, so ordinary password hygiene is enough - no need to treat it
-like a banking password.
-
-### Windows: WSL2
-
-Docker Desktop on Windows needs WSL2 (Windows Subsystem for Linux) installed. Recent
-versions of Docker Desktop detect if it's missing and offer to set it up for you, but
-if you're prompted separately, or Docker Desktop says WSL isn't installed:
-
-1. Open PowerShell **as Administrator** (right-click it → "Run as administrator") and
-   run:
-   ```powershell
-   wsl --install
-   ```
-2. **Restart your computer** - this step matters, Docker Desktop won't detect WSL2
-   until you do.
-3. After restarting, WSL finishes installing its default Ubuntu environment and asks
-   you to create a Unix username and password. This is local to that WSL environment
-   on your own machine only - it's not a Microsoft account, isn't sent anywhere, and
-   isn't used for anything outside WSL itself, so ordinary/simple is fine. You don't
-   need to remember or use it for pyopia-gui either - Docker Desktop only needs the
-   WSL2 platform to exist, not that particular login.
-4. Relaunch Docker Desktop.
-
-If `wsl --install` itself fails:
-
-- **Check virtualization is enabled in your BIOS/UEFI** (Task Manager → Performance
-  tab → CPU → "Virtualization"). It's off by default on some machines, and WSL2 can't
-  work without it - if it's off, no software fix will help until it's enabled in the
-  firmware settings.
-- **Make sure Windows Update is fully up to date** - `wsl --install` can fail on a
-  system that's missed prerequisite updates.
-- **Try the manual two-step method** instead of the all-in-one command:
-  ```powershell
-  dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
-  dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
-  ```
-  then restart and try `wsl --install` again.
-- If it still fails with no clear reason, check **Event Viewer** (Windows Logs →
-  Application, or Applications and Services Logs → Microsoft → Windows → Lxss) for
-  the actual underlying error - "Catastrophic failure" is just Windows' generic
-  wrapper message and doesn't say what really went wrong.
-
-### Mac: "docker: command not found" or a credentials error
-
-If Docker Desktop shows as running but pyopia-gui still says Docker isn't
-installed, or you see `docker: command not found` in a terminal, or later an
-error like `error getting credentials - err: exec: "docker-credential-desktop"
-executable file not found in $PATH`, Docker Desktop's command-line tools never
-got linked onto your PATH - normally a one-time step during its first launch
-that needs your Mac password, which is easy to miss or dismiss. Add its bundled
-tools to your PATH directly:
-
-```bash
-echo 'export PATH="/Applications/Docker.app/Contents/Resources/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Then open a new terminal (or `source ~/.zshrc` in your current one) and try
-again.
-
-### Linux: "permission denied" talking to Docker
-
-If `docker --version` prints a version but pyopia-gui still says Docker isn't
-ready, or a terminal shows something like "permission denied while trying to
-connect to the Docker API", your user account isn't in the `docker` group yet
-- by default only `root` can talk to the Docker daemon:
-
-```bash
-sudo usermod -aG docker $USER
-```
-
-Then either **reboot**, or run `newgrp docker` in your current terminal - a
-plain log out/log back in doesn't reliably pick up the new group membership on
-every desktop environment.
+This page covers the app itself once it's installed and running - see
+[Installing pyopia-gui](installing.md) if you're not there yet.
 
 ## The main screen
 
@@ -184,7 +36,8 @@ tabs - each one only usable once it's actually relevant:
    setting to be `false`).
 6. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
-   it jumps here automatically and shows whatever's already there.
+   it jumps here automatically and shows whatever's already there - see
+   [Reviewing results](#reviewing-results) below.
 
 Below the tabs, a **status line** shows what's currently happening, and a **log
 panel** shows PyOPIA's own output in detail - useful if something goes wrong and you
@@ -208,7 +61,9 @@ The quickest way to see pyopia-gui working:
    project's own output, so it's always an accurate record, useful if you need to
    report which version of PyOPIA your results came from - plus a **Generate montage**
    button (montages aren't built automatically) and summary statistics: particle
-   count, d50 (median particle size), and a size-distribution chart.
+   count, d50 (median particle size), and a size-distribution chart. See
+   [Reviewing results](#reviewing-results) below for exporting these, and filtering
+   by aux data.
 
 ## Using your own data
 
@@ -310,6 +165,32 @@ Preview fall back to skipping background correction entirely for that run, shown
 as a caveat under the result when it happens - treat that particular preview as a
 rougher sanity check, not a stand-in for reviewing real results on the
 **Results** tab after a full run.
+
+## Reviewing results
+
+The **Results** tab shows whatever's currently on disk for a processed project -
+opening pyopia-gui on an already-processed project jumps here automatically.
+
+**Generate montage** builds an image of the detected particles (not built
+automatically, since it's a separate step); **Save montage as…** copies it to a
+location of your choice. **Export size distribution as CSV…** saves the
+diameter/particle-count bins behind the chart further down. **Export to
+EcoTaxa…** bundles particle images and stats into a zip ready to import into
+[EcoTaxa](https://ecotaxa.obs-vlfr.fr/). Both the montage and the EcoTaxa export
+land in the project folder first (Docker can only write inside its own mounted
+folder), then offer their own **Save as…** to copy elsewhere.
+
+Further down: particle count, d50 (median particle size), and a size-distribution
+chart.
+
+**Filtering by aux data**: if the project's config sets
+`steps.output.auxillary_data_file` (e.g. depth or temperature, interpolated onto
+each image's timestamp during processing), a **Filter by** control appears above
+the montage - pick a variable, set a min/max range, and click **Apply filter** to
+restrict the montage, EcoTaxa export, and summary stats/chart to particles within
+that range. A banner shows while a filter's active, with a **Clear filter** button
+to revert. A filtered montage/EcoTaxa export is saved under its own `-filtered`
+filename, so it doesn't overwrite the full-dataset one.
 
 ## Choosing (and switching) a PyOPIA version
 

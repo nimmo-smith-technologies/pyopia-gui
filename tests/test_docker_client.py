@@ -103,10 +103,79 @@ def test_merge_mfdata_command_handles_output_datafile_with_no_subfolder(tmp_path
     assert command[-2:] == ["merge-mfdata", "."]
 
 
-def test_make_montage_command_passes_stats_file(tmp_path: Path) -> None:
+def test_make_montage_command_passes_stats_file_and_default_output_filename(tmp_path: Path) -> None:
     command = docker_client.make_montage_command(tmp_path, "processed/demo-STATS.nc")
 
-    assert command[-2:] == ["make-montage", "processed/demo-STATS.nc"]
+    assert command[-4:] == ["make-montage", "processed/demo-STATS.nc", "--output-filename", "montage.png"]
+
+
+def test_make_montage_command_passes_a_custom_output_filename(tmp_path: Path) -> None:
+    command = docker_client.make_montage_command(tmp_path, "processed/demo-STATS.nc", output_filename="filtered.png")
+
+    assert command[-1] == "filtered.png"
+
+
+def test_make_montage_command_omits_filter_flag_by_default(tmp_path: Path) -> None:
+    command = docker_client.make_montage_command(tmp_path, "processed/demo-STATS.nc")
+
+    assert "--filter-variable" not in command
+
+
+def test_make_montage_command_passes_filter_variable(tmp_path: Path) -> None:
+    command = docker_client.make_montage_command(
+        tmp_path, "processed/demo-STATS.nc", filter_variable=("depth", 1.5, 10.0)
+    )
+
+    assert command[-4:] == ["--filter-variable", "depth", "1.5", "10.0"]
+
+
+def test_export_to_ecotaxa_command_passes_stats_and_export_filenames(tmp_path: Path) -> None:
+    command = docker_client.export_to_ecotaxa_command(tmp_path, "processed/demo-STATS.nc", "ecotaxa_export.zip")
+
+    assert command[-3:] == ["export-to-ecotaxa", "processed/demo-STATS.nc", "ecotaxa_export.zip"]
+
+
+def test_export_to_ecotaxa_command_passes_filter_variable(tmp_path: Path) -> None:
+    command = docker_client.export_to_ecotaxa_command(
+        tmp_path, "processed/demo-STATS.nc", "ecotaxa_export.zip", filter_variable=("depth", 1.5, 10.0)
+    )
+
+    assert command[-4:] == ["--filter-variable", "depth", "1.5", "10.0"]
+
+
+def _write_aux_data_file(path: Path, names: list[str]) -> None:
+    path.write_text(
+        "% COMMENT LINE\n% COMMENT LINE\n"
+        + ("," * len(names))
+        + "\n"
+        + ("," * len(names))
+        + "\n"
+        + ",".join(names)
+        + "\n2022-06-08T18:40:00.00000,0.0,5.0\n"
+    )
+
+
+def test_aux_data_columns_reads_names_excluding_time(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[steps.output]\noutput_datafile = "processed/demo"\nauxillary_data_file = "aux.csv"\n'
+    )
+    _write_aux_data_file(tmp_path / "aux.csv", ["time", "depth", "temperature"])
+
+    assert docker_client.aux_data_columns(tmp_path) == ["depth", "temperature"]
+
+
+def test_aux_data_columns_empty_when_not_configured(tmp_path: Path) -> None:
+    _write_config(tmp_path)
+
+    assert docker_client.aux_data_columns(tmp_path) == []
+
+
+def test_aux_data_columns_empty_when_file_missing(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_text(
+        '[steps.output]\noutput_datafile = "processed/demo"\nauxillary_data_file = "does-not-exist.csv"\n'
+    )
+
+    assert docker_client.aux_data_columns(tmp_path) == []
 
 
 def test_stats_filename_reads_output_datafile_from_config(tmp_path: Path) -> None:
@@ -254,6 +323,14 @@ def test_write_config_overwrites_existing_file(tmp_path: Path) -> None:
     docker_client.write_config(tmp_path, {"steps": {"output": {"output_datafile": "new/path"}}})
 
     assert docker_client._output_datafile(tmp_path, "config.toml") == "new/path"
+
+
+def test_write_size_distribution_csv_writes_a_header_and_the_bins(tmp_path: Path) -> None:
+    csv_path = tmp_path / "size_distribution.csv"
+
+    docker_client.write_size_distribution_csv(str(csv_path), [2.72, 3.21], [0, 5])
+
+    assert csv_path.read_text().splitlines() == ["diameter_um,particle_count", "2.72,0", "3.21,5"]
 
 
 def test_set_step_enabled_false_moves_a_step_from_steps_to_disabled() -> None:
