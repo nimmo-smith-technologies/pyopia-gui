@@ -178,7 +178,10 @@ tabs - each one only usable once it's actually relevant:
    on it - once finished, results are available on the Results tab (including
    generating a montage there, on demand - it isn't built automatically).
    **Starting a run clears the project's existing output folder first**, so old
-   results are never left behind to potentially get mixed into new ones.
+   results are never left behind to potentially get mixed into new ones. A
+   **Processors to use** setting lets you split the run across multiple chunks for
+   a speedup on a multi-core machine (requires the project's `steps.output.append`
+   setting to be `false`).
 6. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
    it jumps here automatically and shows whatever's already there.
