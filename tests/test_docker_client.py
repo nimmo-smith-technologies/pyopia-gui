@@ -44,6 +44,19 @@ def test_process_command_mounts_project_dir_and_passes_config(tmp_path: Path) ->
     assert command[-2:] == ["process", "config.toml"]
 
 
+def test_process_command_omits_chunk_flags_by_default(tmp_path: Path) -> None:
+    command = docker_client.process_command(tmp_path)
+
+    assert "--num-chunks" not in command
+    assert "--strategy" not in command
+
+
+def test_process_command_passes_chunk_flags_when_requested(tmp_path: Path) -> None:
+    command = docker_client.process_command(tmp_path, num_chunks=4, strategy="interleave")
+
+    assert command[-4:] == ["--num-chunks", "4", "--strategy", "interleave"]
+
+
 def test_volume_args_use_a_fixed_container_path_not_the_host_path(tmp_path: Path) -> None:
     # A Windows host path (C:\Users\...) isn't valid *inside* a Linux container at
     # all - the container side must be a fixed, always-valid Linux path.

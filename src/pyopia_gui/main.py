@@ -383,6 +383,30 @@ def index() -> None:
                 "in config.toml, not your edits. Save changes there first if you want them included."
             ).classes("text-sm text-orange-600")
             config_dirty_warning.visible = False
+            with ui.row().classes("items-center gap-2"):
+                num_chunks_input = ui.number("Processors to use", value=1, min=1, precision=0).classes("w-40")
+                num_chunks_input.tooltip(
+                    "Split the dataset into this many chunks and process them in parallel - "
+                    "a real speedup on a multi-core machine. Leave at 1 for today's single-chunk behaviour."
+                )
+                strategy_select = ui.select(["block", "interleave"], value="block", label="Chunking strategy")
+                strategy_select.classes("w-40")
+                strategy_select.tooltip(
+                    "block: each chunk gets a contiguous run of images. interleave: chunks take "
+                    "every Nth image instead - use this if particle concentration drifts steadily "
+                    "over the dataset, so each chunk still sees a representative spread."
+                )
+            ui.label(
+                "Using more than one processor requires steps.output.append = false, set on the "
+                "Configuration tab - PyOPIA writes one file per chunk in that mode, then merges them."
+            ).classes("text-xs text-gray-500 -mt-3")
+
+            def update_strategy_enabled(*_args: object) -> None:
+                strategy_select.set_enabled((num_chunks_input.value or 1) > 1)
+
+            num_chunks_input.on_value_change(update_strategy_enabled)
+            update_strategy_enabled()
+
             run_button = ui.button("Run processing")
             run_button.tooltip("Runs PyOPIA processing on the folder above")
 
@@ -1316,6 +1340,22 @@ def index() -> None:
             run_button.enable()
             return
 
+        num_chunks = int(num_chunks_input.value or 1)
+        strategy = strategy_select.value
+        if num_chunks > 1 and await nicegui_run.io_bound(docker_client.output_uses_append, project_dir):
+            # PyOPIA's own check_chunks() rejects num_chunks > 1 against append=true outright -
+            # caught here, before the output folder below is cleared, so a misconfigured run
+            # fails without destroying existing results for nothing.
+            ui.notify(
+                "Using more than one processor requires steps.output.append = false "
+                "(set on the Configuration tab) - processing not started.",
+                type="negative",
+                multi_line=True,
+            )
+            set_status("Ready", busy=False)
+            run_button.enable()
+            return
+
         # Clear this project's real output folder before running, not just the UI's own
         # stale state below - PyOPIA's own per-image STATS output (used when the
         # config's output step has append=false) has no way to tell a fresh run's files
@@ -1338,7 +1378,9 @@ def index() -> None:
         with results_container:
             ui.label("Processing is running…").classes("text-sm text-gray-500")
         set_status("Running processing (this can take a few minutes)…", busy=True)
-        exit_code, lines = await run_streamed_to_log(docker_client.process_command(project_dir, image=image))
+        exit_code, lines = await run_streamed_to_log(
+            docker_client.process_command(project_dir, image=image, num_chunks=num_chunks, strategy=strategy)
+        )
         if exit_code != 0:
             report_failure(lines, "Processing failed")
             run_button.enable()

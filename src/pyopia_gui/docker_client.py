@@ -246,9 +246,22 @@ def generate_config_command(
     ]
 
 
-def process_command(project_dir: Path, config_filename: str = "config.toml", image: str = PYOPIA_IMAGE) -> list[str]:
-    """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`."""
-    return [
+def process_command(
+    project_dir: Path,
+    config_filename: str = "config.toml",
+    image: str = PYOPIA_IMAGE,
+    num_chunks: int = 1,
+    strategy: str = "block",
+) -> list[str]:
+    """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`.
+
+    `num_chunks`/`strategy` map directly to PyOPIA's own `process --num-chunks`/`--strategy`
+    (split the dataset into that many chunks and process them in parallel via
+    `multiprocessing` - unaffected by running inside Docker, since multiprocessing within
+    one container works the same as on the host). Only appended when `num_chunks` asks for
+    more than one chunk, so the default call is byte-for-byte what it always was.
+    """
+    command = [
         "docker",
         "run",
         "--rm",
@@ -258,6 +271,9 @@ def process_command(project_dir: Path, config_filename: str = "config.toml", ima
         "process",
         config_filename,
     ]
+    if num_chunks > 1:
+        command += ["--num-chunks", str(num_chunks), "--strategy", strategy]
+    return command
 
 
 def merge_mfdata_command(
