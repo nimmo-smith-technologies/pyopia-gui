@@ -27,6 +27,7 @@ CLAUDE.md
 # Editor/IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 
 # OS cruft
