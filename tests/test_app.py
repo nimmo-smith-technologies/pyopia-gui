@@ -1133,6 +1133,113 @@ async def test_save_changes_keeps_a_non_blank_value_for_a_none_defaulting_field(
     assert saved["steps"]["output"]["project_metadata_file"] == "metadata.json"
 
 
+async def test_save_changes_omits_a_blank_field_whose_real_default_is_not_none(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The bug that actually broke a real project's processing: SilCamLoad's
+    # image_format defaults to 'infer', not None - the previous fix only omitted
+    # a blank field when its real default was exactly None, so a blank
+    # image_format got written back as the literal string "", which PyOPIA's own
+    # load_image() doesn't treat as "unset" (only the exact string 'infer' means
+    # that) - every image then failed to load. Any field with a real default,
+    # whatever it is, must be omitted when blank so that default actually applies.
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {
+            "steps": {
+                "load": {
+                    "pipeline_class": "pyopia.instrument.silcam.SilCamLoad",
+                    "fields": [
+                        {
+                            "name": "image_format",
+                            "current_value": "",
+                            "has_default": True,
+                            "default": "infer",
+                            "description": "",
+                        },
+                    ],
+                },
+                "output": {
+                    "pipeline_class": "pyopia.io.StatsToDisc",
+                    "fields": [
+                        {
+                            "name": "output_datafile",
+                            "current_value": "processed/demo",
+                            "has_default": False,
+                            "default": None,
+                            "description": "",
+                        }
+                    ],
+                },
+            }
+        },
+    )
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'
+        '[steps.load]\npipeline_class = "pyopia.instrument.silcam.SilCamLoad"\nimage_format = ""\n\n'
+        '[steps.output]\npipeline_class = "pyopia.io.StatsToDisc"\noutput_datafile = "processed/demo"\n'
+    )
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("image_format")
+
+    user.find(kind=ui.button, content="Save changes").click()
+    await user.should_see("Configuration saved")
+
+    saved = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert "image_format" not in saved["steps"]["load"]
+
+
+async def test_save_changes_refuses_a_blank_required_field_on_an_order_sensitive_step(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Order-sensitive steps (no enable/disable switch) previously had no
+    # blank-required-field validation at all - only switch-toggleable steps did.
+    # A blank required field there used to be written as-is (or, for a blank
+    # number input, as Python None - which tomli_w can't even serialize, so
+    # saving would crash outright rather than refuse cleanly).
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {
+            "steps": {
+                "output": {
+                    "pipeline_class": "pyopia.io.StatsToDisc",
+                    "fields": [
+                        {
+                            "name": "output_datafile",
+                            "current_value": "",
+                            "has_default": False,
+                            "default": None,
+                            "description": "",
+                        }
+                    ],
+                }
+            }
+        },
+    )
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'
+        '[steps.output]\npipeline_class = "pyopia.io.StatsToDisc"\noutput_datafile = ""\n'
+    )
+    original_config_text = tmp_path.joinpath("config.toml").read_text()
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("output_datafile")
+
+    user.find(kind=ui.button, content="Save changes").click()
+    await user.should_see("needs a value before it can be saved")
+
+    assert tmp_path.joinpath("config.toml").read_text() == original_config_text
+
+
 def _write_config_with_a_step_and_classifier(tmp_path: Path) -> None:
     tmp_path.joinpath("config.toml").write_text(
         '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'

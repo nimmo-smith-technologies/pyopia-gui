@@ -848,54 +848,74 @@ def index() -> None:
                 }
                 if log_file_input.value:
                     updated["general"]["log_file"] = log_file_input.value
+
+                def field_has_real_default(step_name: str, name: str) -> bool:
+                    field_info = next((f for f in step_schema_fields.get(step_name, []) if f["name"] == name), None)
+                    return field_info is not None and field_info.get("has_default", False)
+
+                def first_missing_required_field(step_name: str, step_config: dict) -> str | None:
+                    """The name of the first field with no real default (PyOPIA's own class
+                    construction requires one) left blank/unset in `step_config`, or None if
+                    every such field is filled. TOML also has no null type, so a required
+                    field can never be written as the Python `None` a blank number input
+                    produces - it must be caught here instead, before config.toml either
+                    fails to write at all or ends up with a value PyOPIA can't run against.
+                    """
+                    for field in step_schema_fields.get(step_name, []):
+                        if field["has_default"]:
+                            continue
+                        value = step_config.get(field["name"])
+                        if value is None or value == "":
+                            return field["name"]
+                    return None
+
                 for step_name, fields in step_inputs.items():
                     step_config = {"pipeline_class": all_steps_by_name[step_name]["pipeline_class"]}
                     for name, (element, kind) in fields.items():
                         if kind is bool:
                             step_config[name] = element.value
-                        elif kind is int:
-                            step_config[name] = int(element.value) if element.value is not None else None
-                        elif kind is float:
-                            step_config[name] = float(element.value) if element.value is not None else None
-                        elif kind == "raw":
+                            continue
+                        if kind == "raw":
                             try:
                                 step_config[name] = _toml_value_from_text(element.value)
                             except tomllib.TOMLDecodeError as e:
                                 ui.notify(f"{step_name}.{name}: {e}", type="negative")
                                 return None
+                            continue
+                        if kind is int:
+                            value = int(element.value) if element.value is not None else None
+                        elif kind is float:
+                            value = float(element.value) if element.value is not None else None
                         else:
-                            # An empty text box for a field whose real default is Python
-                            # None (not "") means "leave this unset", not "set it to the
-                            # empty string" - PyOPIA steps like StatsToDisc guard on
-                            # `is not None`, so a written "" is treated as set and can
-                            # crash trying to use it as a value. Omit the key entirely
-                            # instead, so PyOPIA's own None default applies.
-                            field_info = next(
-                                (f for f in step_schema_fields.get(step_name, []) if f["name"] == name), None
-                            )
-                            omit_when_blank = field_info is not None and field_info.get("default") is None
-                            if element.value == "" and omit_when_blank:
-                                continue
-                            step_config[name] = element.value
+                            value = element.value
+                        # A blank/unset value for a field with a real default - whatever
+                        # that default actually is (None, 'infer', a number, ...) - means
+                        # "leave this unset", not "write this literal blank/null". PyOPIA
+                        # steps guard on `is not None` (e.g. StatsToDisc's
+                        # project_metadata_file) or switch on the exact string 'infer'
+                        # (SilCamLoad's image_format), so writing "" instead breaks either
+                        # way; omitting the key lets PyOPIA's own default actually apply.
+                        if (value is None or value == "") and field_has_real_default(step_name, name):
+                            continue
+                        step_config[name] = value
                     switch = step_enabled.get(step_name)
                     if switch is None:
-                        # Order-sensitive step - no switch, always active (matches
-                        # this project's behaviour before the enable/disable feature
-                        # existed: written as-is, no "is this blank?" validation gate).
+                        # Order-sensitive step - no switch, always active.
+                        missing = first_missing_required_field(step_name, step_config)
+                        if missing:
+                            ui.notify(f"{step_name}.{missing} needs a value before it can be saved", type="negative")
+                            return None
                         updated["steps"][step_name] = step_config
                         continue
                     enabled = switch.value
                     if enabled:
-                        for field in step_schema_fields.get(step_name, []):
-                            if field["has_default"]:
-                                continue
-                            value = step_config.get(field["name"])
-                            if value is None or value == "":
-                                ui.notify(
-                                    f"{step_name}.{field['name']} needs a value before this step can be enabled",
-                                    type="negative",
-                                )
-                                return None
+                        missing = first_missing_required_field(step_name, step_config)
+                        if missing:
+                            ui.notify(
+                                f"{step_name}.{missing} needs a value before this step can be enabled",
+                                type="negative",
+                            )
+                            return None
                         updated["steps"][step_name] = step_config
                     else:
                         updated.setdefault("steps_disabled", {})[step_name] = step_config
