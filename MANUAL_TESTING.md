@@ -39,6 +39,15 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
 - [ ] **Refresh** re-converts thumbnails from scratch.
 - [ ] Each thumbnail's **Preview →** switches to the Preview tab with that
       image selected.
+- [ ] Tick a few individual thumbnails (in any order) and click **Use
+      selected as raw_files** - a "Filtered to N of M raw image(s)" banner
+      appears, and `raw_files_subset.txt` lists them in chronological
+      (dataset) order, not click order.
+- [ ] **Select all on this page** ticks every thumbnail on the current page;
+      **Clear selection** unticks all (including ones selected on a previous
+      page).
+- [ ] **Clear subset** (shown in the banner) restores `general.raw_files` to
+      its original pattern and removes `raw_files_subset.txt`.
 
 ## Configuration tab
 
@@ -114,6 +123,12 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
       `raw_files` - the second run's results should not be inflated by
       leftover per-image files from the first (processed/ is actually empty
       before each run, not just overwritten in place).
+- [ ] Set **Processors to use** above 1 - **Chunking strategy** becomes
+      enabled (disabled again back at 1). With `append = true` still set,
+      **Run processing** is refused with a clear notify *before* clearing the
+      output folder (existing results must survive the refusal). Set
+      `append = false` and rerun - completes normally with `--num-chunks`/
+      `--strategy` in the logged command, and correct results.
 
 ## Results tab
 
@@ -126,6 +141,27 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
       could be misread as "only X of Y were processed".
 - [ ] **Generate montage** / **Regenerate montage** produce a real montage
       image.
+- [ ] **Save montage as…** opens a folder-browsing dialog (starting at the
+      project folder), navigating into a subfolder works, and **Save here**
+      actually copies the file there.
+- [ ] **Export size distribution as CSV…** writes a real CSV (header row
+      `diameter_um,particle_count`, one row per bin) to the chosen location.
+- [ ] **Export to EcoTaxa…** produces a real zip (particle PNGs +
+      `ecotaxa_particle_statistics.tsv`); **Save EcoTaxa export as…** copies
+      it elsewhere.
+- [ ] On a project with `steps.output.auxillary_data_file` configured, a
+      **Filter by** control appears with the declared aux column(s) (e.g.
+      `depth`); on one without, it doesn't appear at all.
+- [ ] Enter a real min/max and click **Apply filter** - particle count, d50,
+      and the chart all narrow to match; a "Filtered to particles with ..."
+      banner appears with a **Clear filter** button.
+- [ ] With a filter active, **Generate montage** and **Export to EcoTaxa…**
+      write to `montage-filtered.png`/`ecotaxa_export-filtered.zip` (not the
+      unfiltered filenames) and contain only the filtered particle count.
+- [ ] **Clear filter** reverts particle count/d50/chart back to the full
+      dataset.
+- [ ] Leaving Min or Max blank, or Min greater than Max, refuses **Apply
+      filter** with a clear message instead of running anything.
 
 ## Configuration tab - field round-tripping
 
@@ -138,3 +174,18 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
       the output step until this was fixed.) Check by saving *any*
       unrelated field on a project that has one of these fields unset, then
       inspecting config.toml directly.
+- [ ] Same, but for a field whose real default is **not** `None` (e.g.
+      `load`'s `image_format`, which defaults to `'infer'`) - blank must
+      still be **omitted**, not written as `""`. (Confirmed real, serious
+      bug found this way too: a blank `image_format` written as `""` isn't
+      the same as PyOPIA's own `'infer'` default - `SilCamLoad` doesn't
+      special-case an empty string, so every image failed to load until
+      this was fixed.)
+- [ ] A blank **required** field (no real default at all) on an
+      order-sensitive step (i.e. one with no Enable switch, e.g. `output`'s
+      `output_datafile`) blocks **Save changes** with a clear message,
+      same as it already does for a toggleable step like `classifier` -
+      config.toml stays unchanged. (Previously only toggleable steps were
+      checked at all; a blank required field on any other step saved
+      silently, and a blank *number* field would crash the save outright
+      since TOML has no null type.)
