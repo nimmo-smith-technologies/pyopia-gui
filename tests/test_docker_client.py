@@ -680,6 +680,70 @@ def test_select_background_context_returns_empty_when_sample_not_in_raw_paths() 
     assert context == []
 
 
+def test_list_raw_files_globs_a_normal_pattern(tmp_path: Path) -> None:
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "b.silc").write_bytes(b"")
+    (tmp_path / "images" / "a.silc").write_bytes(b"")
+
+    result = docker_client.list_raw_files(tmp_path, "images/*.silc")
+
+    assert result == [tmp_path / "images" / "a.silc", tmp_path / "images" / "b.silc"]
+
+
+def test_list_raw_files_reads_an_explicit_txt_filelist_in_written_order(tmp_path: Path) -> None:
+    (tmp_path / "images").mkdir()
+    (tmp_path / "raw_files_subset.txt").write_text("images/b.silc\nimages/a.silc\n")
+
+    result = docker_client.list_raw_files(tmp_path, "raw_files_subset.txt")
+
+    assert result == [tmp_path / "images" / "b.silc", tmp_path / "images" / "a.silc"]
+
+
+def test_list_raw_files_returns_empty_for_a_missing_txt_filelist(tmp_path: Path) -> None:
+    assert docker_client.list_raw_files(tmp_path, "raw_files_subset.txt") == []
+
+
+def test_apply_raw_files_subset_writes_project_relative_paths_and_repoints_config(tmp_path: Path) -> None:
+    (tmp_path / "images").mkdir()
+    selected = [tmp_path / "images" / "a.silc", tmp_path / "images" / "b.silc"]
+    config = {"general": {"raw_files": "images/*.silc"}}
+
+    new_config = docker_client.apply_raw_files_subset(tmp_path, config, selected)
+
+    assert new_config["general"]["raw_files"] == docker_client.RAW_FILES_SUBSET_FILENAME
+    assert config["general"]["raw_files"] == "images/*.silc"  # input untouched
+    subset_path = tmp_path / docker_client.RAW_FILES_SUBSET_FILENAME
+    assert subset_path.read_text().splitlines() == ["images/a.silc", "images/b.silc"]
+
+
+def test_apply_raw_files_subset_stashes_the_original_pattern_once(tmp_path: Path) -> None:
+    config = {"general": {"raw_files": "images/*.silc"}}
+
+    first = docker_client.apply_raw_files_subset(tmp_path, config, [])
+    # A second subset, applied on top of the first, must not stash the subset
+    # filename itself as the "original" to restore back to.
+    docker_client.apply_raw_files_subset(tmp_path, first, [])
+
+    assert docker_client.raw_files_original_pattern(tmp_path) == "images/*.silc"
+
+
+def test_clear_raw_files_subset_restores_the_original_pattern_and_removes_files(tmp_path: Path) -> None:
+    config = {"general": {"raw_files": "images/*.silc"}}
+    subsetted = docker_client.apply_raw_files_subset(tmp_path, config, [])
+
+    restored = docker_client.clear_raw_files_subset(tmp_path, subsetted)
+
+    assert restored["general"]["raw_files"] == "images/*.silc"
+    assert not (tmp_path / docker_client.RAW_FILES_SUBSET_FILENAME).exists()
+    assert docker_client.raw_files_original_pattern(tmp_path) is None
+
+
+def test_clear_raw_files_subset_is_a_noop_when_no_subset_was_applied(tmp_path: Path) -> None:
+    config = {"general": {"raw_files": "images/*.silc"}}
+
+    assert docker_client.clear_raw_files_subset(tmp_path, config) is None
+
+
 def test_substitute_background_steps_replaces_a_configured_background_step() -> None:
     config = {
         "steps": {

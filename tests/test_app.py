@@ -1419,6 +1419,65 @@ async def test_explorer_tab_pagination_next_and_previous(
     await user.should_see("Page 1 of 2")
 
 
+async def test_explorer_tab_select_all_on_page_updates_the_selection_count(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "D20220608T184237.407722.silc").write_bytes(b"")
+    (images_dir / "D20220608T184238.407874.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Page 1 of 1")
+
+    await user.should_see("0 selected")
+    user.find(kind=ui.button, content="Select all on this page").click()
+    await user.should_see("2 selected")
+
+    user.find(kind=ui.button, content="Clear selection").click()
+    await user.should_see("0 selected")
+
+
+async def test_explorer_tab_apply_and_clear_raw_files_subset(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "D20220608T184237.407722.silc").write_bytes(b"")
+    (images_dir / "D20220608T184238.407874.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Page 1 of 1")
+
+    user.find(kind=ui.button, content="Select all on this page").click()
+    await user.should_see("2 selected")
+    user.find(kind=ui.button, content="Use selected as raw_files").click()
+    await user.should_see("Filtered to 2 raw image(s)")
+
+    config = docker_client.load_config(tmp_path)
+    assert config["general"]["raw_files"] == docker_client.RAW_FILES_SUBSET_FILENAME
+    subset_lines = (tmp_path / docker_client.RAW_FILES_SUBSET_FILENAME).read_text().splitlines()
+    assert subset_lines == ["images/D20220608T184237.407722.silc", "images/D20220608T184238.407874.silc"]
+
+    user.find(kind=ui.button, content="Clear subset").click()
+    await asyncio.sleep(0.2)
+    config = docker_client.load_config(tmp_path)
+    assert config["general"]["raw_files"] == "images/*.silc"
+    assert not (tmp_path / docker_client.RAW_FILES_SUBSET_FILENAME).exists()
+
+
 async def test_explorer_tab_shows_a_plain_language_hint_for_a_load_mismatch(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

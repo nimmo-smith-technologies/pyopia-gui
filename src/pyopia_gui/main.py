@@ -958,8 +958,33 @@ def index() -> None:
                 ui.label(f"No raw files found matching '{raw_files_pattern}'.").classes("text-sm text-gray-500")
                 return
 
+            async def clear_subset() -> None:
+                current_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                restored = docker_client.clear_raw_files_subset(project_dir, current_config)
+                if restored is None:
+                    return
+                await nicegui_run.io_bound(docker_client.write_config, project_dir, restored)
+                ui.notify("Restored the full raw_files pattern", type="positive")
+                await refresh_config(project_dir)
+                await refresh_explorer(project_dir)
+
+            if raw_files_pattern == docker_client.RAW_FILES_SUBSET_FILENAME:
+                original_pattern = docker_client.raw_files_original_pattern(project_dir)
+                with ui.row().classes("items-center gap-2"):
+                    ui.label(
+                        f"⚠ Filtered to {len(raw_paths)} raw image(s) via a selected subset"
+                        + (f" (originally '{original_pattern}')" if original_pattern else "")
+                        + "."
+                    ).classes("text-sm text-orange-600")
+                    if original_pattern:
+                        ui.button("Clear subset", on_click=clear_subset).props("flat dense")
+
             page_count = math.ceil(len(raw_paths) / _EXPLORER_PAGE_SIZE)
             state = {"page": 0}
+            # Selected raw files for a subset, kept across page navigation within this one
+            # Explorer load (reset, like `state` above, each time refresh_explorer runs) -
+            # a checkbox's checked state on any given page is just `raw_path in selected`.
+            selected: set[Path] = set()
 
             with ui.row().classes("items-center gap-2"):
                 previous_button = ui.button("Previous")
@@ -972,6 +997,54 @@ def index() -> None:
                     "on their own"
                 )
                 page_label = ui.label().classes("text-sm text-gray-500")
+
+            with ui.row().classes("items-center gap-2"):
+                select_all_button = ui.button("Select all on this page")
+                select_all_button.tooltip("e.g. for a quick test run against just this page, rather than everything")
+                clear_selection_button = ui.button("Clear selection").props("flat")
+                use_subset_button = ui.button("Use selected as raw_files")
+                use_subset_button.tooltip(
+                    "Narrow this project to just the selected images - e.g. to process a "
+                    "chosen slice of a larger dataset. A button to revert appears above once applied."
+                )
+                selection_label = ui.label("0 selected").classes("text-sm text-gray-500")
+
+            def update_selection_controls() -> None:
+                selection_label.set_text(f"{len(selected)} selected")
+                use_subset_button.set_enabled(bool(selected))
+
+            def toggle_selected(raw_path: Path, checked: bool) -> None:
+                if checked:
+                    selected.add(raw_path)
+                else:
+                    selected.discard(raw_path)
+                update_selection_controls()
+
+            async def select_all_on_page() -> None:
+                page = state["page"]
+                page_paths = raw_paths[page * _EXPLORER_PAGE_SIZE : (page + 1) * _EXPLORER_PAGE_SIZE]
+                selected.update(page_paths)
+                update_selection_controls()
+                await show_page()
+
+            async def clear_selection() -> None:
+                selected.clear()
+                update_selection_controls()
+                await show_page()
+
+            async def use_selected_as_subset() -> None:
+                if not selected:
+                    return
+                # Chronological (raw_paths) order, not selection-click order - chunking and
+                # background-correction both depend on processing files in sequence.
+                ordered = [p for p in raw_paths if p in selected]
+                current_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                new_config = docker_client.apply_raw_files_subset(project_dir, current_config, ordered)
+                await nicegui_run.io_bound(docker_client.write_config, project_dir, new_config)
+                ui.notify(f"raw_files narrowed to the {len(ordered)} selected image(s)", type="positive")
+                await refresh_config(project_dir)
+                await refresh_explorer(project_dir)
+
             progress_label = ui.label().classes("text-sm text-gray-500")
             progress_label.visible = False
             progress_bar = ui.linear_progress(value=0, show_value=False)
@@ -1001,8 +1074,14 @@ def index() -> None:
                     its thumbnail/error, or a spinner while it's still pending (re)conversion,
                     rather than a stale thumbnail in the process of being replaced, which could
                     otherwise look like an up to date result when it's actually about to be
-                    overwritten.
+                    overwritten. Always includes a selection checkbox, regardless of
+                    pending/error/loaded state, so "Select all on this page" works even
+                    while thumbnails are still converting.
                     """
+                    checkbox = ui.checkbox(
+                        value=raw_path in selected, on_change=lambda e, p=raw_path: toggle_selected(p, e.value)
+                    ).props("dense")
+                    checkbox.tooltip("Select this image for a raw_files subset")
                     if pending:
                         ui.spinner(size="md")
                     elif error:
@@ -1058,6 +1137,10 @@ def index() -> None:
             previous_button.on_click(go_previous)
             next_button.on_click(go_next)
             refresh_button.on_click(lambda: show_page(force=True))
+            select_all_button.on_click(select_all_on_page)
+            clear_selection_button.on_click(clear_selection)
+            use_subset_button.on_click(use_selected_as_subset)
+            update_selection_controls()
             await show_page()
 
     # Converting a page of raw-image thumbnails is comparatively slow (a real Docker

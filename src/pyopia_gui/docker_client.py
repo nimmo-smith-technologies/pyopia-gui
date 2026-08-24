@@ -644,12 +644,81 @@ _BROWSER_VIEWABLE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
 
 def list_raw_files(project_dir: Path, raw_files_pattern: str) -> list[Path]:
     """The project's raw files matching `raw_files_pattern` (config.toml's own
-    `general.raw_files` glob), sorted - the same glob+sort the Raw data explorer's
-    thumbnail grid uses for its own listing, factored out here so Preview's
-    background-correction context (see `preview_pipeline`'s `context_raw_paths`)
-    can find a sample's preceding files without duplicating this.
+    `general.raw_files`), sorted - the same listing the Raw data explorer's thumbnail
+    grid uses for itself, factored out here so Preview's background-correction context
+    (see `preview_pipeline`'s `context_raw_paths`) can find a sample's preceding files
+    without duplicating this.
+
+    A `.txt`-suffixed pattern is an explicit file list rather than a glob - PyOPIA's own
+    `FilesToProcess` reads it the same way (one path per line, order preserved as
+    written, not re-sorted) - see `apply_raw_files_subset` below, which is the only
+    thing that writes one.
     """
+    if raw_files_pattern.endswith(".txt"):
+        list_path = project_dir / raw_files_pattern
+        if not list_path.is_file():
+            return []
+        lines = [line.strip() for line in list_path.read_text().splitlines() if line.strip()]
+        return [project_dir / line for line in lines]
     return sorted(project_dir.glob(raw_files_pattern))
+
+
+# Written by apply_raw_files_subset() below, at the project root (a real path
+# PyOPIA's own FilesToProcess reads directly, not app-internal bookkeeping).
+RAW_FILES_SUBSET_FILENAME = "raw_files_subset.txt"
+
+# App-internal bookkeeping only, never read by PyOPIA - the general.raw_files pattern
+# a subset replaced, so Explorer's "Clear subset" can restore the real original rather
+# than whatever the most recent subset happened to be.
+_RAW_FILES_ORIGINAL_PATTERN_FILENAME = ".raw_files_original_pattern"
+
+
+def raw_files_original_pattern(project_dir: Path) -> str | None:
+    """The `general.raw_files` pattern a subset replaced, if one is currently active - see
+    `apply_raw_files_subset`. None if no subset was ever applied (or it's since been cleared).
+    """
+    path = project_dir / _RAW_FILES_ORIGINAL_PATTERN_FILENAME
+    return path.read_text().strip() if path.is_file() else None
+
+
+def apply_raw_files_subset(project_dir: Path, config: dict, selected_paths: list[Path]) -> dict:
+    """Narrow the project to just `selected_paths` (already ordered to match their
+    original raw-files order - chunk/background-correction steps depend on chronological
+    order, not click order) by writing them to RAW_FILES_SUBSET_FILENAME and pointing
+    `general.raw_files` at it.
+
+    Stashes whatever pattern this replaces (once, the first time) so a later subset -
+    picked from what's already a filtered view - can still be cleared back to the real
+    original pattern, not the previous subset file.
+
+    Returns a new config dict (doesn't mutate `config`), for the caller to write back.
+    """
+    current_pattern = (config.get("general") or {}).get("raw_files")
+    if current_pattern and current_pattern != RAW_FILES_SUBSET_FILENAME:
+        (project_dir / _RAW_FILES_ORIGINAL_PATTERN_FILENAME).write_text(current_pattern)
+    lines = [str(p.relative_to(project_dir)) for p in selected_paths]
+    (project_dir / RAW_FILES_SUBSET_FILENAME).write_text("\n".join(lines) + "\n")
+    new_config = json.loads(json.dumps(config))
+    new_config.setdefault("general", {})["raw_files"] = RAW_FILES_SUBSET_FILENAME
+    return new_config
+
+
+def clear_raw_files_subset(project_dir: Path, config: dict) -> dict | None:
+    """Restore `general.raw_files` to the pattern a subset (see `apply_raw_files_subset`)
+    replaced, and remove the subset file and bookkeeping alongside it.
+
+    Returns a new config dict, or None if there's no stashed original pattern to restore
+    (config unchanged in that case) - e.g. `raw_files` was never actually narrowed via a
+    subset, so there's nothing to revert.
+    """
+    original = raw_files_original_pattern(project_dir)
+    if original is None:
+        return None
+    new_config = json.loads(json.dumps(config))
+    new_config.setdefault("general", {})["raw_files"] = original
+    (project_dir / RAW_FILES_SUBSET_FILENAME).unlink(missing_ok=True)
+    (project_dir / _RAW_FILES_ORIGINAL_PATTERN_FILENAME).unlink(missing_ok=True)
+    return new_config
 
 
 def select_background_context(raw_paths: list[Path], sample: Path, required: int) -> list[Path]:
