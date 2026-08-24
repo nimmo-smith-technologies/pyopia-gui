@@ -8,8 +8,9 @@ graphical front end for configuring, running, and reviewing PyOPIA processing
 jobs, without needing to work directly with config files and the command line.
 
 > **Status:** Usable end-to-end - create a project, explore raw data,
-> configure processing, run it, and review results. Still early and
-> evolving, so bug reports and feedback are very welcome.
+> configure processing, preview its effect on a single image, run it, and
+> review results. Still early and evolving, so bug reports and feedback are
+> very welcome.
 
 ## What this is (and isn't)
 

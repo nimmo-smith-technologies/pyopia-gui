@@ -168,11 +168,18 @@ tabs - each one only usable once it's actually relevant:
    valid PyOPIA project. Lets you view and edit that project's `config.toml` without
    needing a text editor - see [Editing a project's configuration](#editing-a-projects-configuration)
    below.
-4. **Process** - becomes available once the Project folder field points at a valid
+4. **Preview** - becomes available once the Project folder field points at a valid
+   PyOPIA project. Run the current processing parameters against a single sample
+   image to quickly check the effect of a change, without waiting for a full batch
+   run - see [Previewing parameter effects on one image](#previewing-parameter-effects-on-one-image)
+   below.
+5. **Process** - becomes available once the Project folder field points at a valid
    PyOPIA project (a folder with a `config.toml`). **Run processing** runs PyOPIA
    on it - once finished, results are available on the Results tab (including
    generating a montage there, on demand - it isn't built automatically).
-5. **Results** - becomes available once that project actually has results (a
+   **Starting a run clears the project's existing output folder first**, so old
+   results are never left behind to potentially get mixed into new ones.
+6. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
    it jumps here automatically and shows whatever's already there.
 
@@ -240,13 +247,60 @@ settings and one section per processing step:
   descriptions PyOPIA's own documentation gives them - read directly from the exact
   PyOPIA version this project uses, so they're always accurate for it. If a step's
   parameters can't be read this way for some reason, its raw values are still shown
-  and editable, just without descriptions.
+  and editable, just without descriptions. Each step has an **Enable this step**
+  switch above it - switching a step off keeps its settings (nothing is deleted,
+  just moved aside) but leaves it out of both processing and Preview until it's
+  switched back on; a disabled step shows dimmed with "(disabled)" in its caption.
+  Switching a step back on and saving requires every one of its required fields to
+  actually have a value - if one's still blank, **Save changes** is blocked with a
+  clear message instead of producing a config that fails partway through a run.
 
 Click **Save changes** to write your edits back to `config.toml`. **Generate default
 config…** overwrites it entirely with PyOPIA's own bare defaults for a chosen
 instrument type (silcam, holo, or uvp) - useful for starting a new project's config
 from scratch, or resetting a broken one - after a confirmation dialog, since it
-discards any customisation already there.
+discards any customisation already there. It also asks whether to **enable particle
+classification** - leave it unchecked if you don't have a classifier model file
+handy, and the generated config keeps the classifier step present-but-disabled
+(switch it on later from the Configuration tab once you have a model path) rather
+than generating a config that fails the moment you try to use it.
+
+## Previewing parameter effects on one image
+
+Changing a processing parameter and re-running the full pipeline over every raw
+image just to see whether it helped is slow. The **Preview** tab runs the pipeline
+against **one** sample image instead, using the Configuration tab's *current*
+values - including edits you haven't clicked **Save changes** on yet - so you can
+tweak a parameter and re-preview in a few seconds without saving or running a full
+batch job.
+
+To use it: pick a sample image from the **Raw data explorer** tab (click
+**Preview →** on any thumbnail), which switches you to the Preview tab with that
+image selected. Click **Run preview** to see the segmented particles outlined on
+the image, along with particle count and d50 for that one image - the status line
+shows real progress as it runs (which pipeline step it's on, and for holo, how many
+depth slices have rendered), since a preview can take anywhere from a few seconds
+to around a minute. Adjust a parameter on the **Configuration** tab, switch back,
+and click **Run preview** again - no need to save first, or pick the image again.
+
+**For holo projects**, a depth slider also appears - drag it to see the raw
+reconstruction at any depth in the sample volume, redrawn instantly with no extra
+waiting, since every depth was already reconstructed as part of that one preview
+run. This shows the raw reconstruction only, with no particle outlines - those are
+on the separate "Detected particles" image above it. A project with a very fine
+depth step (`stepZ`) will make that one preview run slower, since every depth is
+reconstructed and rendered up front, with no limit on how many.
+
+If your project's config includes a background-correction step, Preview runs it
+for real - background correction needs several images to build up an estimate,
+so Preview quietly gathers that many real raw images from elsewhere in your
+project (preferring the ones just before your chosen sample, or nearby ones if
+there aren't enough) to seed it, then runs your actual sample against the result.
+Only if your project doesn't have enough other raw images to draw on at all does
+Preview fall back to skipping background correction entirely for that run, shown
+as a caveat under the result when it happens - treat that particular preview as a
+rougher sanity check, not a stand-in for reviewing real results on the
+**Results** tab after a full run.
 
 ## Choosing (and switching) a PyOPIA version
 
