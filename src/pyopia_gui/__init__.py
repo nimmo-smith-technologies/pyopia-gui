@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
