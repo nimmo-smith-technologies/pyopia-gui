@@ -778,7 +778,11 @@ def apply_raw_files_subset(project_dir: Path, config: dict, selected_paths: list
     current_pattern = (config.get("general") or {}).get("raw_files")
     if current_pattern and current_pattern != RAW_FILES_SUBSET_FILENAME:
         (project_dir / _RAW_FILES_ORIGINAL_PATTERN_FILENAME).write_text(current_pattern)
-    lines = [str(p.relative_to(project_dir)) for p in selected_paths]
+    # Always forward slashes, regardless of host OS - this file is read by PyOPIA
+    # running inside a Linux container (see _volume_args), not by the host directly,
+    # so a Windows host's native backslash separators would produce paths PyOPIA
+    # can't find.
+    lines = [p.relative_to(project_dir).as_posix() for p in selected_paths]
     (project_dir / RAW_FILES_SUBSET_FILENAME).write_text("\n".join(lines) + "\n")
     new_config = json.loads(json.dumps(config))
     new_config.setdefault("general", {})["raw_files"] = RAW_FILES_SUBSET_FILENAME

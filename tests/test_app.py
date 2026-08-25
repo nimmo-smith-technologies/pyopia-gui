@@ -856,7 +856,7 @@ async def test_results_tab_aux_filter_narrows_particle_count_and_clears(
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
     monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: None)
     tmp_path.joinpath("config.toml").write_text(
-        '[general]\npixel_size = 24\n\n'
+        "[general]\npixel_size = 24\n\n"
         '[steps.output]\noutput_datafile = "processed/demo"\nappend = false\n'
         'auxillary_data_file = "aux.csv"\n'
     )

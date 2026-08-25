@@ -232,9 +232,7 @@ def _open_folder_browser(folder_input: ui.input) -> None:
     with ui.dialog() as dialog, ui.card().classes("w-full max-w-lg"):
         current = _render_folder_browser(Path(folder_input.value.strip()).expanduser())
         with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=dialog.close).tooltip(
-                "Close without changing the project folder"
-            )
+            ui.button("Cancel", on_click=dialog.close).tooltip("Close without changing the project folder")
             ui.button(
                 "Select this folder",
                 on_click=lambda: (folder_input.set_value(str(current["path"])), dialog.close()),
@@ -708,9 +706,7 @@ def index() -> None:
 
             try:
                 px_size = docker_client.pixel_size(project_dir)
-                summary = await nicegui_run.io_bound(
-                    vendored_stats.summarize, str(stats_path), px_size, active_filter
-                )
+                summary = await nicegui_run.io_bound(vendored_stats.summarize, str(stats_path), px_size, active_filter)
             except _STATS_READ_ERRORS as e:
                 ui.label(f"Couldn't compute summary statistics: {e}").classes("text-sm text-red")
             else:
@@ -802,9 +798,9 @@ def index() -> None:
                         return
                     ui.notify(f"Size distribution exported to {destination}", type="positive")
 
-                ui.button(
-                    "Export size distribution as CSV…", on_click=export_size_distribution_csv
-                ).tooltip("Save the diameter/particle-count bins shown above to a CSV file")
+                ui.button("Export size distribution as CSV…", on_click=export_size_distribution_csv).tooltip(
+                    "Save the diameter/particle-count bins shown above to a CSV file"
+                )
 
     # Published by refresh_config() each time it (re)builds the Configuration tab's
     # widgets, so the Preview tab can read current - possibly unsaved - parameter

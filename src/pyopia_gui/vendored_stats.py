@@ -100,9 +100,7 @@ class StatsSummary:
     number_distribution: np.ndarray
 
 
-def summarize(
-    stats_path: str, pixel_size: float, aux_filter: tuple[str, float, float] | None = None
-) -> StatsSummary:
+def summarize(stats_path: str, pixel_size: float, aux_filter: tuple[str, float, float] | None = None) -> StatsSummary:
     """Compute the Results tab's summary statistics from a project's own -STATS.nc file.
 
     `aux_filter`, if given, is an (aux column name, min, max) tuple - e.g.
