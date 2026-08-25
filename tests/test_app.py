@@ -1171,6 +1171,11 @@ async def test_save_changes_omits_a_blank_field_whose_real_default_is_none(
             }
         },
     )
+    # A blank field whose own default is None is ambiguous by introspection alone -
+    # build_config_from_widgets() actually verifies construction to tell "genuinely
+    # optional" apart from "required despite the None default" (see model_path).
+    # Mocked here to succeed, since this test is specifically about the optional case.
+    monkeypatch.setattr(docker_client, "verify_step_constructs", lambda *a, **k: None)
     tmp_path.joinpath("config.toml").write_text(
         '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'
         '[steps.output]\npipeline_class = "pyopia.io.StatsToDisc"\noutput_datafile = "processed/demo"\n'
@@ -1526,6 +1531,79 @@ async def test_enabling_a_step_with_a_blank_required_field_blocks_save(
 
     user.find(kind=ui.button, content="Save changes").click()
     await user.should_see("needs a value before this step can be enabled")
+
+    assert tmp_path.joinpath("config.toml").read_text() == original_config_text
+
+
+async def test_save_changes_refuses_a_blank_none_defaulting_field_that_fails_to_construct(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The real fix for the bug found during v1.0.0 manual testing: PyOPIA's own
+    # Classify.__init__(self, model_path=None, ...) means introspection reports
+    # has_default=True/default=None for model_path - identical to a genuinely
+    # optional field like project_metadata_file. Only actually attempting
+    # construction (verify_step_constructs) can tell the two apart; a blank
+    # model_path must still block enabling classifier, not silently omit the key
+    # and produce a config that crashes the next time it's actually used.
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {
+            "steps": {
+                "output": {
+                    "pipeline_class": "pyopia.io.StatsToDisc",
+                    "fields": [
+                        {
+                            "name": "output_datafile",
+                            "current_value": "processed/demo",
+                            "has_default": False,
+                            "default": None,
+                            "description": "",
+                        }
+                    ],
+                }
+            },
+            "steps_disabled": {
+                "classifier": {
+                    "pipeline_class": "pyopia.classify.Classify",
+                    "fields": [
+                        {
+                            "name": "model_path",
+                            "current_value": "",
+                            "has_default": True,
+                            "default": None,
+                            "description": "",
+                        }
+                    ],
+                }
+            },
+        },
+    )
+
+    def fake_verify(project_dir: Path, pipeline_class: str, kwargs: dict, image: str) -> str | None:
+        assert pipeline_class == "pyopia.classify.Classify"
+        assert "model_path" not in kwargs  # the blank field must be omitted, not sent as None/""
+        return "TypeError: expected str, bytes or os.PathLike object, not NoneType"
+
+    monkeypatch.setattr(docker_client, "verify_step_constructs", fake_verify)
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'
+        '[steps.output]\npipeline_class = "pyopia.io.StatsToDisc"\noutput_datafile = "processed/demo"\n\n'
+        '[steps_disabled.classifier]\npipeline_class = "pyopia.classify.Classify"\nmodel_path = ""\n'
+    )
+    original_config_text = tmp_path.joinpath("config.toml").read_text()
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("classifier")
+
+    switch = user.find(kind=ui.switch).elements.pop()
+    switch.value = True  # enable it, but model_path is still blank
+
+    user.find(kind=ui.button, content="Save changes").click()
+    await user.should_see("leaving model_path blank doesn't work here")
 
     assert tmp_path.joinpath("config.toml").read_text() == original_config_text
 

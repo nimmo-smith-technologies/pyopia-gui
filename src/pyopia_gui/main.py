@@ -6,7 +6,7 @@ import os
 import shutil
 import tomllib
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import tomli_w
@@ -806,7 +806,7 @@ def index() -> None:
     # widgets, so the Preview tab can read current - possibly unsaved - parameter
     # values without a second, duplicate parameter-editing UI. "build_config" is None
     # whenever there's no valid, loaded config to build one from.
-    config_widgets_state: dict[str, Path | Callable[[], dict | None] | None] = {
+    config_widgets_state: dict[str, Path | Callable[[], Awaitable[dict | None]] | None] = {
         "project_dir": None,
         "build_config": None,
     }
@@ -992,13 +992,15 @@ def index() -> None:
 
             background_tasks.create(load_steps(), name="config-introspect")
 
-            def build_config_from_widgets() -> dict | None:
+            async def build_config_from_widgets() -> dict | None:
                 """The config dict implied by the Configuration tab's current widget
                 values - not necessarily what's saved to config.toml. Returns None
-                (after ui.notify-ing the parse error) if a "raw" TOML-literal field
-                fails to parse. Published via config_widgets_state so the Preview tab
-                can read live, possibly-unsaved parameter values without a second,
-                duplicate parameter-editing UI.
+                (after ui.notify-ing the problem) if a "raw" TOML-literal field fails to
+                parse, a required field is blank, or a blank None-defaulting field turns
+                out not to be safe to omit (see `resolved_image`/verify_step_constructs
+                below). Published via config_widgets_state so the Preview tab can read
+                live, possibly-unsaved parameter values without a second, duplicate
+                parameter-editing UI.
                 """
                 updated: dict = {
                     "general": {
@@ -1011,9 +1013,8 @@ def index() -> None:
                 if log_file_input.value:
                     updated["general"]["log_file"] = log_file_input.value
 
-                def field_has_real_default(step_name: str, name: str) -> bool:
-                    field_info = next((f for f in step_schema_fields.get(step_name, []) if f["name"] == name), None)
-                    return field_info is not None and field_info.get("has_default", False)
+                def find_field(step_name: str, name: str) -> dict | None:
+                    return next((f for f in step_schema_fields.get(step_name, []) if f["name"] == name), None)
 
                 def first_missing_required_field(step_name: str, step_config: dict) -> str | None:
                     """The name of the first field with no real default (PyOPIA's own class
@@ -1031,8 +1032,14 @@ def index() -> None:
                             return field["name"]
                     return None
 
+                # Resolved lazily (only if some step actually has a blank None-defaulting
+                # field to verify) and cached here, since it's the same Docker image for
+                # every step in one save/preview.
+                resolved_image: str | None = None
+
                 for step_name, fields in step_inputs.items():
                     step_config = {"pipeline_class": all_steps_by_name[step_name]["pipeline_class"]}
+                    blank_none_default_fields = []
                     for name, (element, kind) in fields.items():
                         if kind is bool:
                             step_config[name] = element.value
@@ -1057,34 +1064,50 @@ def index() -> None:
                         # project_metadata_file) or switch on the exact string 'infer'
                         # (SilCamLoad's image_format), so writing "" instead breaks either
                         # way; omitting the key lets PyOPIA's own default actually apply.
-                        if (value is None or value == "") and field_has_real_default(step_name, name):
+                        field_info = find_field(step_name, name)
+                        if (value is None or value == "") and field_info is not None and field_info["has_default"]:
+                            if field_info["default"] is None:
+                                # has_default=True/default=None is ambiguous by itself -
+                                # could be genuinely optional, or a required value with no
+                                # real default (see verify_step_constructs) - flagged for
+                                # a real check below rather than assumed either way.
+                                blank_none_default_fields.append(name)
                             continue
                         step_config[name] = value
+
                     switch = step_enabled.get(step_name)
-                    if switch is None:
-                        # Order-sensitive step - no switch, always active.
-                        missing = first_missing_required_field(step_name, step_config)
-                        if missing:
-                            ui.notify(f"{step_name}.{missing} needs a value before it can be saved", type="negative")
-                            return None
-                        updated["steps"][step_name] = step_config
-                        continue
-                    enabled = switch.value
+                    enabled = switch is None or switch.value  # no switch = order-sensitive = always active
                     if enabled:
                         missing = first_missing_required_field(step_name, step_config)
                         if missing:
-                            ui.notify(
-                                f"{step_name}.{missing} needs a value before this step can be enabled",
-                                type="negative",
-                            )
+                            reason = "it can be saved" if switch is None else "this step can be enabled"
+                            ui.notify(f"{step_name}.{missing} needs a value before {reason}", type="negative")
                             return None
+                        if blank_none_default_fields:
+                            if resolved_image is None:
+                                resolved_image = await image_for_existing_project(project_dir)
+                            kwargs = {k: v for k, v in step_config.items() if k != "pipeline_class"}
+                            error = await nicegui_run.io_bound(
+                                docker_client.verify_step_constructs,
+                                project_dir,
+                                step_config["pipeline_class"],
+                                kwargs,
+                                resolved_image,
+                            )
+                            if error:
+                                fields_listed = ", ".join(blank_none_default_fields)
+                                ui.notify(
+                                    f"{step_name}: leaving {fields_listed} blank doesn't work here ({error})",
+                                    type="negative",
+                                )
+                                return None
                         updated["steps"][step_name] = step_config
                     else:
                         updated.setdefault("steps_disabled", {})[step_name] = step_config
                 return updated
 
             async def save_changes() -> None:
-                updated = build_config_from_widgets()
+                updated = await build_config_from_widgets()
                 if updated is None:
                     return
                 try:
@@ -1442,7 +1465,7 @@ def index() -> None:
                 if build_config is None or config_widgets_state["project_dir"] != project_dir:
                     ui.notify("Configuration is still loading - try again in a moment", type="warning")
                     return
-                config = build_config()
+                config = await build_config()
                 if config is None:
                     return  # a bad "raw" field already notified the user, same as save_changes()
                 run_button.disable()

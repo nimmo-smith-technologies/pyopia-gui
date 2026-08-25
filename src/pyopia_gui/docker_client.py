@@ -720,6 +720,66 @@ def introspect_config_steps(project_dir: Path, config_filename: str = "config.to
         return {}
 
 
+# has_default=True/default=None looks identical from inspect.signature() alone whether
+# a PyOPIA class treats that as "genuinely optional" (e.g. StatsToDisc's
+# project_metadata_file, guarded internally with `is not None` before use) or "a
+# required value with no real default" (e.g. Classify's model_path, used
+# unconditionally and crashing on None) - only actually attempting construction can
+# tell the two apart. Runs inside the pinned image for the same reason
+# _INTROSPECT_STEPS_SCRIPT does: PyOPIA's own classes aren't installed locally.
+_VERIFY_STEP_CONSTRUCTS_SCRIPT = f"""
+import importlib, json, sys
+
+{inspect.getsource(resolve_pipeline_class)}
+
+pipeline_class, kwargs = json.loads(sys.argv[1])
+try:
+    resolve_pipeline_class(pipeline_class)(**kwargs)
+except Exception as e:
+    print(json.dumps({{"error": f"{{type(e).__name__}}: {{e}}"}}))
+else:
+    print(json.dumps({{"error": None}}))
+"""
+
+
+def verify_step_constructs(
+    project_dir: Path, pipeline_class: str, step_kwargs: dict, image: str = PYOPIA_IMAGE
+) -> str | None:
+    """Actually attempt to construct `pipeline_class` with `step_kwargs` (a step's
+    resolved config, with any blank/omitted fields already left out) inside the
+    pinned PyOPIA image. Returns None if construction succeeds, or a
+    "ClassName: message" error string if it raises - see
+    `_VERIFY_STEP_CONSTRUCTS_SCRIPT`'s comment for why this can't be determined from
+    introspection alone.
+
+    Only worth calling when a step has at least one blank field whose own default is
+    None (see `main.py`'s `build_config_from_widgets`) - a real Docker call, so it's
+    skipped whenever there's nothing actually ambiguous to check.
+    """
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "python",
+        *_volume_args(project_dir),
+        image,
+        "-c",
+        _VERIFY_STEP_CONSTRUCTS_SCRIPT,
+        json.dumps([pipeline_class, step_kwargs]),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=60, text=True, **_no_console_kwargs())
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return f"Couldn't verify: {e}"
+    if result.returncode != 0:
+        return result.stderr.strip() or "Couldn't verify (unknown error)"
+    try:
+        return json.loads(result.stdout)["error"]
+    except (ValueError, KeyError):
+        return "Couldn't verify (unexpected output)"
+
+
 THUMBNAIL_DIR_NAME = ".pyopia_gui_thumbnails"
 _BROWSER_VIEWABLE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
 

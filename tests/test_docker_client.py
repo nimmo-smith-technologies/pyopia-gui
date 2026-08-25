@@ -509,6 +509,37 @@ def test_introspect_config_steps_parses_json_from_the_container(
     assert docker_client.introspect_config_steps(tmp_path) == expected
 
 
+def test_verify_step_constructs_returns_none_on_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        assert "--entrypoint" in command
+        return subprocess.CompletedProcess(command, returncode=0, stdout=json.dumps({"error": None}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.verify_step_constructs(tmp_path, "pyopia.classify.Classify", {"model_path": "m.keras"}) is None
+
+
+def test_verify_step_constructs_returns_the_construction_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        error = "TypeError: expected str, bytes or os.PathLike object, not NoneType"
+        return subprocess.CompletedProcess(command, returncode=0, stdout=json.dumps({"error": error}))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = docker_client.verify_step_constructs(tmp_path, "pyopia.classify.Classify", {})
+
+    assert result == "TypeError: expected str, bytes or os.PathLike object, not NoneType"
+
+
+def test_verify_step_constructs_reports_a_docker_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(command, returncode=1, stdout="", stderr="boom")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.verify_step_constructs(tmp_path, "pyopia.classify.Classify", {}) == "boom"
+
+
 def test_resolve_pipeline_class_imports_and_returns_the_named_class() -> None:
     assert docker_client.resolve_pipeline_class("pathlib.PurePosixPath") is __import__("pathlib").PurePosixPath
 

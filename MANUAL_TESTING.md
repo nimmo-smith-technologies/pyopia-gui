@@ -62,9 +62,16 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
       active `[steps.classifier]`. A real **Run processing** afterwards
       succeeds (this used to crash with a Keras/model-path error).
 - [ ] Switch classifier back on with `model_path` still blank, click **Save
-      changes** - blocked with a clear message, config.toml unchanged.
+      changes** - blocked with a clear message ("leaving model_path blank
+      doesn't work here"), config.toml unchanged. This is a real Docker call
+      (actually attempts constructing the class), not a guess from the field's
+      default value alone - takes a couple of seconds, not instant.
+- [ ] With `model_path` still blank (not saved), pick a sample and click
+      **Run preview** on the Preview tab - blocked the same way, before any
+      container even starts (status stays "Ready", no "Running preview…").
 - [ ] Fill in a real `model_path`, save - moves back to active
-      `[steps.classifier]`.
+      `[steps.classifier]`, and this save is instant again (no blank
+      None-defaulting field left to verify).
 - [ ] **Generate default config…**: checkbox unchecked by default for a
       project with no existing model path, checked if one already exists.
       Unchecked + Generate → classifier lands in `steps_disabled`, not
@@ -189,3 +196,12 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
       checked at all; a blank required field on any other step saved
       silently, and a blank *number* field would crash the save outright
       since TOML has no null type.)
+- [ ] A blank field whose own default is `None` (e.g. `classifier`'s
+      `model_path`) is only safe to omit if PyOPIA's own class actually
+      tolerates it - `has_default=True`/`default=None` looks identical for
+      `model_path` (crashes without it) and `project_metadata_file` (fine
+      without it) from introspection alone, so this can't be told apart by
+      guessing. Saving/previewing a step with one of these fields blank now
+      makes one real Docker call to actually attempt construction and
+      catches the difference for real - see "On the silcam demo" above for
+      the concrete repro.
