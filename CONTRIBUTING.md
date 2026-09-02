@@ -5,6 +5,9 @@ more accessible to people who'd rather work with a graphical interface than a
 config file and command line - it gets better every time someone improves the
 code, fixes a bug, or writes up something that wasn't clear.
 
+Everyone participating is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## The deal
 
 pyopia-gui is released under the GNU Affero General Public License v3.0

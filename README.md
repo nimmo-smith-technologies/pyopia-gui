@@ -97,7 +97,9 @@ It also includes some third-party code under its own license - see
 
 ## Contributing
 
-Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md). Everyone
+participating is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 
