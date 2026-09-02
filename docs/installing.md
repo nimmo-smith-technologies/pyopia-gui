@@ -62,6 +62,10 @@ uv run pyopia-gui
 This starts pyopia-gui and prints a web address (something like
 `http://localhost:8080`) - open that in your browser.
 
+By default it's only reachable from this machine - there's no login of any kind, so
+anyone who can reach it has full control. Set `PYOPIA_GUI_HOST=0.0.0.0` only if you
+deliberately want it reachable from other machines on a network you trust.
+
 ## Docker isn't ready yet
 
 If Docker isn't installed, or isn't running, pyopia-gui shows you exactly what's wrong

@@ -49,6 +49,14 @@ uv run mkdocs serve                # preview the docs locally
 > PYOPIA_GUI_DOCKER_IMAGE=ghcr.io/sintef/pyopia:latest uv run pyopia-gui
 > ```
 
+> **Note:** pyopia-gui binds to `localhost` only by default - there's no login of any
+> kind, so anyone who can reach it has full control (including arbitrary `docker run`
+> access). Only override this if you deliberately want it reachable from other
+> machines on a network you trust:
+> ```bash
+> PYOPIA_GUI_HOST=0.0.0.0 uv run pyopia-gui
+> ```
+
 Once it's running, open the URL it prints in your browser. The "Project folder"
 field controls both what "Create example project" creates and what "Run
 processing" processes - it starts out pointing at a canned example project you

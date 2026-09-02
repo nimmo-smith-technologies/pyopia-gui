@@ -1706,7 +1706,10 @@ def index() -> None:
 
 
 def run() -> None:
-    ui.run(title="pyopia-gui", reload=False)
+    # NiceGUI's own default host is 0.0.0.0 (every network interface) - there's no
+    # authentication of any kind, so binding to localhost only is the safe default;
+    # PYOPIA_GUI_HOST opts back in for anyone who deliberately wants LAN access.
+    ui.run(title="pyopia-gui", host=os.environ.get("PYOPIA_GUI_HOST", "127.0.0.1"), reload=False)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
