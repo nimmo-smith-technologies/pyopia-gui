@@ -218,8 +218,8 @@ def test_pixel_size_reads_general_config(tmp_path: Path) -> None:
     assert docker_client.pixel_size(tmp_path) == 24
 
 
-def test_image_for_version_uses_mirror_tag(tmp_path: Path) -> None:
-    assert docker_client.image_for_version("9.16.20") == "ghcr.io/nimmo-smith-technologies/pyopia:9.16.20"
+def test_image_for_version_adds_back_the_v_prefix(tmp_path: Path) -> None:
+    assert docker_client.image_for_version("9.16.20") == "ghcr.io/sintef/pyopia:v9.16.20"
 
 
 def test_image_for_version_falls_back_to_default_when_none() -> None:
@@ -239,10 +239,12 @@ def _fake_response(payload: object) -> io.BytesIO:
 def test_list_available_versions_sorts_newest_first_and_skips_non_version_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Real tags observed on ghcr.io/sintef/pyopia mix "v"-prefixed and (at least once)
+    # capitalised "V"-prefixed - both must resolve to the same bare version.
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> io.BytesIO:
         if "token" in request.full_url:
             return _fake_response({"token": "fake-token"})
-        return _fake_response({"tags": ["latest", "main", "9.16.20", "9.16.23", "9.9.1"]})
+        return _fake_response({"tags": ["latest", "main", "v9.16.20", "V9.16.23", "9.9.1"]})
 
     monkeypatch.setattr(docker_client.urllib.request, "urlopen", fake_urlopen)
 
@@ -679,10 +681,10 @@ def test_interpret_failure_does_not_blame_a_successful_pull_for_a_later_stall() 
     # own silent, unprogressed example-data download) must be reported as a stall,
     # not misdiagnosed as a failed image pull.
     lines = [
-        "Unable to find image 'ghcr.io/nimmo-smith-technologies/pyopia:latest' locally",
-        "latest: Pulling from nimmo-smith-technologies/pyopia",
+        "Unable to find image 'ghcr.io/sintef/pyopia:latest' locally",
+        "latest: Pulling from sintef/pyopia",
         "Pull complete",
-        "Status: Downloaded newer image for ghcr.io/nimmo-smith-technologies/pyopia:latest",
+        "Status: Downloaded newer image for ghcr.io/sintef/pyopia:latest",
         "No output received for 600s - this usually means a network operation "
         "(like pulling the Docker image) has stalled. Stopping.",
     ]

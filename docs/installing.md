@@ -14,15 +14,6 @@ pyopia-gui uses PyOPIA's own Docker image to do the actual image processing. If 
 isn't installed or running, pyopia-gui tells you exactly what to do the first time you
 open it - see [Docker isn't ready yet](#docker-isnt-ready-yet) below.
 
-!!! note "About the PyOPIA image"
-    PyOPIA's own official Docker image is currently private
-    ([tracking issue](https://github.com/SINTEF/pyopia/issues/424)), so pyopia-gui
-    uses a mirror we publish ourselves in the meantime - no extra steps needed, this
-    is handled automatically. See the
-    [README](https://github.com/nimmo-smith-technologies/pyopia-gui#readme) if you'd
-    rather point it at the official image once that's public again, or one you've
-    built yourself.
-
 ## Getting pyopia-gui
 
 ### Option A: Download the app (no install needed)

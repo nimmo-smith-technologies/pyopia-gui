@@ -38,15 +38,10 @@ uv run ruff check .                # lint
 uv run mkdocs serve                # preview the docs locally
 ```
 
-> **Note:** `ghcr.io/sintef/pyopia` isn't currently publicly pullable ([upstream
-> issue](https://github.com/SINTEF/pyopia/issues/424)). Until that's fixed,
-> pyopia-gui defaults to a mirror we publish ourselves at
-> `ghcr.io/nimmo-smith-technologies/pyopia` (see
-> [ADR 0006](docs/decisions/0006-2026-08-13-mirror-pyopia-image.md)) - no extra
-> steps needed. If you'd rather use the official image once it's public again, or
-> build your own from source, override it:
+> **Note:** pyopia-gui uses PyOPIA's own official image by default. Override it with
+> `PYOPIA_GUI_DOCKER_IMAGE` to pin an exact tag, or point at one you've built yourself:
 > ```bash
-> PYOPIA_GUI_DOCKER_IMAGE=ghcr.io/sintef/pyopia:latest uv run pyopia-gui
+> PYOPIA_GUI_DOCKER_IMAGE=ghcr.io/sintef/pyopia:v2.17.0 uv run pyopia-gui
 > ```
 
 > **Note:** pyopia-gui binds to `localhost` only by default - there's no login of any

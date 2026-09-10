@@ -20,12 +20,9 @@ from urllib.error import URLError
 
 import tomli_w
 
-# ghcr.io/sintef/pyopia isn't currently publicly pullable
-# (https://github.com/SINTEF/pyopia/issues/424), so this defaults to a mirror we
-# publish ourselves (see .github/workflows/publish-pyopia-mirror.yml and
-# docs/decisions/0006-2026-08-13-mirror-pyopia-image.md) until that's fixed upstream.
-_MIRROR_REPO = "nimmo-smith-technologies/pyopia"
-PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", f"ghcr.io/{_MIRROR_REPO}:latest")
+# See docs/decisions/0008-2026-09-08-use-official-pyopia-image.md.
+_OFFICIAL_REPO = "sintef/pyopia"
+PYOPIA_IMAGE = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE", f"ghcr.io/{_OFFICIAL_REPO}:latest")
 
 
 def image_for_version(version: str | None) -> str:
@@ -33,14 +30,18 @@ def image_for_version(version: str | None) -> str:
 
     Ignores `version` entirely when PYOPIA_GUI_DOCKER_IMAGE is set - a manual override
     already names a complete image:tag (possibly a different registry entirely), and
-    shouldn't be second-guessed by our own mirror-specific version tagging.
+    shouldn't be second-guessed here.
+
+    PyOPIA's own `__version__` (and the version this reads back from a project's stats
+    file) is bare, e.g. "2.17.0", but its published image tags are "v"-prefixed to match
+    its git tags - the "v" is added back on here.
     """
     override = os.environ.get("PYOPIA_GUI_DOCKER_IMAGE")
     if override is not None:
         return override
     if not version:
         return PYOPIA_IMAGE
-    return f"ghcr.io/{_MIRROR_REPO}:{version}"
+    return f"ghcr.io/{_OFFICIAL_REPO}:v{version}"
 
 
 class DockerStatus(Enum):
@@ -480,11 +481,14 @@ def output_uses_append(project_dir: Path, config_filename: str = "config.toml") 
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in version.split("."))
+    return tuple(int(part) for part in version.lstrip("vV").split("."))
 
 
 def list_available_versions(timeout: float = 5.0) -> list[str]:
-    """Published PyOPIA versions on the mirror image, newest first (e.g. ["9.16.23", "9.16.20"]).
+    """Published PyOPIA versions on the official image, newest first (e.g. ["2.17.0", "2.0.3"]).
+
+    Returned bare (no "v" prefix), matching PyOPIA's own `__version__` - the registry's
+    tags are "v"-prefixed (e.g. "v2.17.0"); see `image_for_version()`.
 
     Best-effort only: any failure (offline, registry error, unexpected response) returns an
     empty list rather than raising, so callers can fall back to the default image instead.
@@ -493,11 +497,11 @@ def list_available_versions(timeout: float = 5.0) -> list[str]:
     images ls-remote` equivalent - listing what's on a registry needs the registry API.
     """
     try:
-        token_request = urllib.request.Request(f"https://ghcr.io/token?scope=repository:{_MIRROR_REPO}:pull")
+        token_request = urllib.request.Request(f"https://ghcr.io/token?scope=repository:{_OFFICIAL_REPO}:pull")
         with urllib.request.urlopen(token_request, timeout=timeout) as response:  # noqa: S310 fixed https:// URL above
             token = json.load(response)["token"]
         tags_request = urllib.request.Request(
-            f"https://ghcr.io/v2/{_MIRROR_REPO}/tags/list", headers={"Authorization": f"Bearer {token}"}
+            f"https://ghcr.io/v2/{_OFFICIAL_REPO}/tags/list", headers={"Authorization": f"Bearer {token}"}
         )
         with urllib.request.urlopen(tags_request, timeout=timeout) as response:  # noqa: S310 fixed https:// URL above
             tags = json.load(response)["tags"]
@@ -506,9 +510,10 @@ def list_available_versions(timeout: float = 5.0) -> list[str]:
     versions = []
     for tag in tags:
         try:
-            versions.append((_version_tuple(tag), tag))
+            version_tuple = _version_tuple(tag)
         except ValueError:
             continue  # not a version tag (e.g. "latest", "main") - skip it
+        versions.append((version_tuple, tag.lstrip("vV")))
     versions.sort(reverse=True)
     return [tag for _, tag in versions]
 

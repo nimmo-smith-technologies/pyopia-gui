@@ -149,8 +149,8 @@ async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
     blocking any particular location - including legitimate ones like an external
     drive's own root.
 
-    Also lets the user pick which PyOPIA version this new project should use, if the
-    mirror's published versions are reachable - a new project's version is never chosen
+    Also lets the user pick which PyOPIA version this new project should use, if
+    PyOPIA's published versions are reachable - a new project's version is never chosen
     automatically, since someone may deliberately want to match an older project rather
     than always get the newest. Returns (confirmed, chosen_version); chosen_version is
     None if there was nothing to choose from (offline, or PYOPIA_GUI_DOCKER_IMAGE

@@ -1,7 +1,7 @@
 # ADR 0006 — Publish a mirror of PyOPIA's Docker image as a temporary default
 
 **Date:** 13 August 2026
-**Status:** Accepted
+**Status:** Superseded by [ADR 0008](0008-2026-09-08-use-official-pyopia-image.md)
 **Decider:** Alex Nimmo Smith, Nimmo Smith Technologies Limited
 
 ---

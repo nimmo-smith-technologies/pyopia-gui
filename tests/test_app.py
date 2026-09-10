@@ -480,7 +480,7 @@ async def test_create_lets_user_choose_pyopia_version(
     user.find(kind=ui.button, content="Create here").click()
     await asyncio.sleep(0.2)  # let on_create()'s coroutine run the (mocked) docker command
 
-    assert any("ghcr.io/nimmo-smith-technologies/pyopia:9.16.20" in command for command in calls)
+    assert any("ghcr.io/sintef/pyopia:v9.16.20" in command for command in calls)
 
     await user.should_see("Example project created")
 
@@ -523,7 +523,7 @@ async def test_running_right_after_create_does_not_ask_for_version_again(
     await asyncio.sleep(0.2)
 
     await user.should_not_see("Choose a PyOPIA version")
-    assert any("ghcr.io/nimmo-smith-technologies/pyopia:9.16.20" in command for command in calls[1:])
+    assert any("ghcr.io/sintef/pyopia:v9.16.20" in command for command in calls[1:])
 
 
 async def test_run_shows_friendly_message_in_log_on_image_pull_failure(
@@ -920,7 +920,7 @@ async def test_run_reuses_pinned_version_from_existing_output(
     user.find(kind=ui.button, content="Run processing").click()
     await asyncio.sleep(0.2)
 
-    assert any("ghcr.io/nimmo-smith-technologies/pyopia:9.16.15" in command for command in calls)
+    assert any("ghcr.io/sintef/pyopia:v9.16.15" in command for command in calls)
 
 
 async def test_run_cancelled_pinned_version_confirmation_does_not_run_docker(
@@ -978,7 +978,7 @@ async def test_run_prompts_for_version_when_project_has_no_pin_yet(
     user.find(kind=ui.button, content="Use this version").click()
     await asyncio.sleep(0.2)
 
-    assert any("ghcr.io/nimmo-smith-technologies/pyopia:9.16.15" in command for command in calls)
+    assert any("ghcr.io/sintef/pyopia:v9.16.15" in command for command in calls)
 
 
 async def test_run_cancelled_version_choice_does_not_run_docker(
