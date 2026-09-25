@@ -302,6 +302,26 @@ async def _confirm_pinned_version(pinned: str, newest: str | None) -> bool:
     return bool(await dialog)
 
 
+async def _confirm_version_substitution(pinned: str, suggested: str) -> bool:
+    """Ask whether to continue with `suggested` when `pinned` is no longer published.
+
+    Returns False if cancelled.
+    """
+    with ui.dialog() as dialog, ui.card():
+        ui.label(f"PyOPIA v{pinned} is no longer available").classes("text-lg font-medium")
+        ui.label(
+            f"This project's existing results were produced with v{pinned}, which isn't "
+            f"published any more. The closest available version is v{suggested} - results "
+            "may differ slightly from the original run."
+        ).classes("text-sm text-gray-500")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False))
+            ui.button(f"Continue with v{suggested}", on_click=lambda: dialog.submit(True)).mark(
+                "confirm-version-substitution"
+            )
+    return bool(await dialog)
+
+
 async def _show_update_if_newer(update_link: ui.link) -> None:
     latest = await nicegui_run.io_bound(version_check.check_for_newer_release, __version__)
     if latest:
@@ -506,8 +526,8 @@ def index() -> None:
         exit_code = await docker_client.run_streamed(command, on_line)
         return exit_code, lines
 
-    def report_failure(lines: list[str], fallback: str) -> None:
-        message = docker_client.interpret_failure(lines) or f"{fallback} - see log below"
+    def report_failure(lines: list[str], fallback: str, image: str = docker_client.PYOPIA_IMAGE) -> None:
+        message = docker_client.interpret_failure(lines, image) or f"{fallback} - see log below"
         log.push(f"→ {message}", classes="text-yellow-300 font-bold")
         set_status(message, busy=False)
         ui.notify(message, type="negative")
@@ -519,13 +539,22 @@ def index() -> None:
         so reprocessing never silently switches versions partway through. Otherwise asks
         explicitly (same picker as on_create), unless that choice was already made earlier
         this session, in which case it's reused silently rather than asked again.
+
+        A pinned version that's no longer published (e.g. it only ever existed on the
+        mirror image, since retired) offers the closest available replacement instead of
+        just failing the Docker pull.
         """
         if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
             return docker_client.PYOPIA_IMAGE
         pinned = await nicegui_run.io_bound(docker_client.read_pinned_version, project_dir)
         if pinned:
-            newest_available = await nicegui_run.io_bound(docker_client.list_available_versions)
-            newest = newest_available[0] if newest_available else None
+            available = await nicegui_run.io_bound(docker_client.list_available_versions)
+            if available and pinned not in available:
+                suggested = docker_client.nearest_available_version(pinned, available)
+                if not await _confirm_version_substitution(pinned, suggested):
+                    return None
+                return docker_client.image_for_version(suggested)
+            newest = available[0] if available else None
             if not await _confirm_pinned_version(pinned, newest):
                 return None
             return docker_client.image_for_version(pinned)
@@ -540,14 +569,22 @@ def index() -> None:
             chosen_versions_this_session[str(project_dir)] = chosen
         return docker_client.image_for_version(chosen) if chosen else None
 
-    async def image_for_existing_project(project_dir: Path) -> str:
+    async def image_for_existing_project(project_dir: Path) -> str | None:
         """The image to use for further Docker operations (e.g. generating a montage) on a
         project that already has results - always its pinned version, never a fresh choice,
-        since there's nothing to choose between once results already exist.
+        since there's nothing to choose between once results already exist. None if the
+        user cancelled a version-substitution prompt (see resolve_run_image).
         """
         if "PYOPIA_GUI_DOCKER_IMAGE" in os.environ:
             return docker_client.PYOPIA_IMAGE
         pinned = await nicegui_run.io_bound(docker_client.read_pinned_version, project_dir)
+        if pinned:
+            available = await nicegui_run.io_bound(docker_client.list_available_versions)
+            if available and pinned not in available:
+                suggested = docker_client.nearest_available_version(pinned, available)
+                if not await _confirm_version_substitution(pinned, suggested):
+                    return None
+                return docker_client.image_for_version(suggested)
         return docker_client.image_for_version(pinned)
 
     async def refresh_results(project_dir: Path) -> None:
@@ -620,6 +657,8 @@ def index() -> None:
 
             async def generate_montage() -> None:
                 image = await image_for_existing_project(project_dir)
+                if image is None:
+                    return
                 set_status("Building montage…", busy=True)
                 command = docker_client.make_montage_command(
                     project_dir,
@@ -633,7 +672,7 @@ def index() -> None:
                     set_status("Montage created", busy=False)
                     await refresh_results(project_dir)
                 else:
-                    report_failure(lines, "Montage creation failed")
+                    report_failure(lines, "Montage creation failed", image)
 
             async def save_montage_as() -> None:
                 destination = await _choose_save_location(project_dir, montage_filename)
@@ -665,6 +704,8 @@ def index() -> None:
 
             async def export_to_ecotaxa() -> None:
                 image = await image_for_existing_project(project_dir)
+                if image is None:
+                    return
                 set_status("Building EcoTaxa export…", busy=True)
                 command = docker_client.export_to_ecotaxa_command(
                     project_dir,
@@ -678,7 +719,7 @@ def index() -> None:
                     set_status("EcoTaxa export created", busy=False)
                     await refresh_results(project_dir)
                 else:
-                    report_failure(lines, "EcoTaxa export failed")
+                    report_failure(lines, "EcoTaxa export failed", image)
 
             async def save_ecotaxa_export_as() -> None:
                 destination = await _choose_save_location(project_dir, ecotaxa_filename)
@@ -843,11 +884,13 @@ def index() -> None:
                     return
                 classifier_enabled = params.pop("classifier_enabled")
                 image = await image_for_existing_project(project_dir)
+                if image is None:
+                    return
                 set_status("Generating default config…", busy=True)
                 command = docker_client.generate_config_command(project_dir, image=image, **params)
                 exit_code, lines = await run_streamed_to_log(command)
                 if exit_code != 0:
-                    report_failure(lines, "Generating default config failed")
+                    report_failure(lines, "Generating default config failed", image)
                     return
                 generated_path = project_dir / f"{params['instrument']}-config.toml"
                 generated_path.replace(project_dir / "config.toml")
@@ -1086,6 +1129,8 @@ def index() -> None:
                         if blank_none_default_fields:
                             if resolved_image is None:
                                 resolved_image = await image_for_existing_project(project_dir)
+                                if resolved_image is None:
+                                    return None
                             kwargs = {k: v for k, v in step_config.items() if k != "pipeline_class"}
                             error = await nicegui_run.io_bound(
                                 docker_client.verify_step_constructs,
@@ -1610,7 +1655,7 @@ def index() -> None:
             await refresh_project_state()
             tabs.value = "process"
         else:
-            report_failure(lines, "Failed to create example project")
+            report_failure(lines, "Failed to create example project", image)
         create_button.enable()
 
     async def on_run() -> None:
@@ -1670,7 +1715,7 @@ def index() -> None:
             docker_client.process_command(project_dir, image=image, num_chunks=num_chunks, strategy=strategy)
         )
         if exit_code != 0:
-            report_failure(lines, "Processing failed")
+            report_failure(lines, "Processing failed", image)
             run_button.enable()
             return
         ui.notify("Processing complete", type="positive")
@@ -1687,7 +1732,7 @@ def index() -> None:
                 docker_client.merge_mfdata_command(project_dir, image=image)
             )
             if merge_exit_code != 0:
-                report_failure(merge_lines, "Merging processed stats failed")
+                report_failure(merge_lines, "Merging processed stats failed", image)
                 run_button.enable()
                 return
 

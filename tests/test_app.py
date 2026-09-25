@@ -951,6 +951,66 @@ async def test_run_cancelled_pinned_version_confirmation_does_not_run_docker(
     assert calls == []
 
 
+async def test_run_substitutes_nearest_version_when_pinned_is_no_longer_available(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Real case: a project pinned to a mirror-only version after the mirror was retired -
+    # that exact version can never be pulled again, so the nearest real one is offered.
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.16.15")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.17.0"])
+    (tmp_path / "config.toml").write_text('[steps.output]\noutput_datafile = "processed/demo"\n')
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    user.find(kind=ui.button, content="Run processing").click()
+
+    await user.should_see("PyOPIA v2.16.15 is no longer available")
+    await user.should_see("v2.17.0")
+
+    user.find(kind=ui.button, content="Continue with v2.17.0").click()
+    await asyncio.sleep(0.2)
+
+    assert any("ghcr.io/sintef/pyopia:v2.17.0" in command for command in calls)
+
+
+async def test_run_cancelled_version_substitution_does_not_run_docker(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.16.15")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.17.0"])
+    (tmp_path / "config.toml").write_text('[steps.output]\noutput_datafile = "processed/demo"\n')
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    user.find(kind=ui.button, content="Run processing").click()
+    await user.should_see("PyOPIA v2.16.15 is no longer available")
+
+    user.find(kind=ui.button, content="Cancel").click()
+    await asyncio.sleep(0.2)
+
+    assert calls == []
+
+
 async def test_run_prompts_for_version_when_project_has_no_pin_yet(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

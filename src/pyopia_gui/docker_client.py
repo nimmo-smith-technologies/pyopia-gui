@@ -484,6 +484,20 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.lstrip("vV").split("."))
 
 
+def nearest_available_version(pinned: str, available: list[str]) -> str:
+    """The smallest of `available` that's at least `pinned`, or the newest if none qualify.
+
+    Used when a project's pinned version is no longer published (e.g. it only ever
+    existed on a mirror image that's since been retired) - picks the closest real
+    replacement rather than jumping straight to the newest unrelated release.
+    `available` is assumed non-empty and newest-first, as returned by
+    `list_available_versions()`.
+    """
+    pinned_tuple = _version_tuple(pinned)
+    candidates = [v for v in available if _version_tuple(v) >= pinned_tuple]
+    return min(candidates, key=_version_tuple) if candidates else available[0]
+
+
 def list_available_versions(timeout: float = 5.0) -> list[str]:
     """Published PyOPIA versions on the official image, newest first (e.g. ["2.17.0", "2.0.3"]).
 
@@ -1074,8 +1088,11 @@ _DAEMON_UNREACHABLE_MARKERS = ("cannot connect to the docker daemon",)
 _STALL_MARKERS = ("no output received for",)
 
 
-def interpret_failure(output_lines: list[str]) -> str | None:
+def interpret_failure(output_lines: list[str], image: str = PYOPIA_IMAGE) -> str | None:
     """Give a plain-language explanation for a recognised Docker failure in `output_lines`.
+
+    `image` should be whichever image the failing command actually used, so a pull
+    failure names the real culprit rather than always naming the default image.
 
     Returns None if nothing recognisable was found, so the caller can fall back to a
     generic "see the log" message.
@@ -1083,7 +1100,7 @@ def interpret_failure(output_lines: list[str]) -> str | None:
     combined = "\n".join(output_lines).lower()
     if any(marker in combined for marker in _IMAGE_PULL_FAILURE_MARKERS):
         return (
-            f"Couldn't pull the PyOPIA image ({PYOPIA_IMAGE}) - it may be private, "
+            f"Couldn't pull the PyOPIA image ({image}) - it may be private, "
             "renamed, or removed, or you may not have network access. See the README "
             "for how to build it locally instead."
         )

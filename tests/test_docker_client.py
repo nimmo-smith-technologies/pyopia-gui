@@ -232,6 +232,14 @@ def test_image_for_version_ignores_version_when_overridden(monkeypatch: pytest.M
     assert docker_client.image_for_version("9.16.20") == "ghcr.io/sintef/pyopia:latest"
 
 
+def test_nearest_available_version_picks_the_smallest_at_or_above_pinned() -> None:
+    assert docker_client.nearest_available_version("2.16.15", ["2.17.0", "2.16.20", "2.16.16"]) == "2.16.16"
+
+
+def test_nearest_available_version_falls_back_to_newest_when_all_are_older() -> None:
+    assert docker_client.nearest_available_version("9.9.9", ["2.17.0", "2.16.20"]) == "2.17.0"
+
+
 def _fake_response(payload: object) -> io.BytesIO:
     return io.BytesIO(json.dumps(payload).encode())
 
@@ -660,6 +668,18 @@ def test_interpret_failure_recognises_real_denied_pull_output() -> None:
 
     assert message is not None
     assert docker_client.PYOPIA_IMAGE in message
+
+
+def test_interpret_failure_names_the_actual_image_that_failed_to_pull() -> None:
+    # A pull failure for a specific pinned version (not the default image) must name that
+    # version, not always blame the default - otherwise the message points at the wrong image.
+    lines = ["docker: Error response from daemon: error from registry: denied"]
+
+    message = docker_client.interpret_failure(lines, "ghcr.io/sintef/pyopia:v2.16.15")
+
+    assert message is not None
+    assert "ghcr.io/sintef/pyopia:v2.16.15" in message
+    assert docker_client.PYOPIA_IMAGE not in message
 
 
 def test_interpret_failure_recognises_pull_access_denied() -> None:

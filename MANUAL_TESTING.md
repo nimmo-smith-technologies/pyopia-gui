@@ -136,6 +136,18 @@ Start the dev server (`uv run pyopia-gui`) and work top to bottom.
       output folder (existing results must survive the refusal). Set
       `append = false` and rerun - completes normally with `--num-chunks`/
       `--strategy` in the logged command, and correct results.
+- [ ] On a project pinned to a version that's no longer published (e.g. edit
+      the stats file's `PyOPIA_version` attribute, or just use an old
+      pre-rc.2 project still pinned to a mirror-only version like `2.16.15`):
+      **Run processing** offers the closest available version instead
+      ("PyOPIA vX.Y.Z is no longer available... closest available version is
+      vA.B.C"), not a raw Docker pull failure. Same for **Generate
+      montage**/**Export to EcoTaxa…** on the Results tab. Cancelling leaves
+      everything unchanged; continuing runs with the offered version and its
+      exact tag appears in the logged command.
+- [ ] Force a real image-pull failure (e.g. `PYOPIA_GUI_DOCKER_IMAGE` set to
+      a nonexistent tag) - the error message names *that* image, not always
+      the default one.
 
 ## Results tab
 
