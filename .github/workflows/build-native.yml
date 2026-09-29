@@ -76,6 +76,84 @@ jobs:
           --icon ${{ matrix.icon-path }}
           src/pyopia_gui/native_app.py
 
+      # Actually runs each built binary headlessly and waits for it to report a real
+      # start, rather than just trusting a successful PyInstaller build - confirmed
+      # necessary the hard way: every native build silently crashed on startup for
+      # months (inspect.getsource() doesn't work inside a frozen executable, see
+      # docker_client.py) while CI stayed green the whole time, since a build
+      # succeeding says nothing about the result actually running.
+      - name: Smoke test the built binary (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          QT_QPA_PLATFORM=offscreen ./dist/pyopia-gui > smoke-test.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 30); do
+            if grep -q "NiceGUI ready to go" smoke-test.log 2>/dev/null; then
+              echo "Smoke test passed - app started successfully"
+              kill "$pid" 2>/dev/null || true
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "App process exited unexpectedly:"
+              cat smoke-test.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Timed out waiting for the app to report it had started:"
+          cat smoke-test.log
+          kill "$pid" 2>/dev/null || true
+          exit 1
+
+      - name: Smoke test the built binary (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          QT_QPA_PLATFORM=offscreen ./dist/pyopia-gui.app/Contents/MacOS/pyopia-gui > smoke-test.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 30); do
+            if grep -q "NiceGUI ready to go" smoke-test.log 2>/dev/null; then
+              echo "Smoke test passed - app started successfully"
+              kill "$pid" 2>/dev/null || true
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "App process exited unexpectedly:"
+              cat smoke-test.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Timed out waiting for the app to report it had started:"
+          cat smoke-test.log
+          kill "$pid" 2>/dev/null || true
+          exit 1
+
+      - name: Smoke test the built binary (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          QT_QPA_PLATFORM=offscreen ./dist/pyopia-gui.exe > smoke-test.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 30); do
+            if grep -q "NiceGUI ready to go" smoke-test.log 2>/dev/null; then
+              echo "Smoke test passed - app started successfully"
+              kill "$pid" 2>/dev/null || true
+              exit 0
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "App process exited unexpectedly:"
+              cat smoke-test.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Timed out waiting for the app to report it had started:"
+          cat smoke-test.log
+          kill "$pid" 2>/dev/null || true
+          exit 1
+
       - name: Zip the binary with execute permission set (Linux)
         if: runner.os == 'Linux'
         # zip doesn't preserve the execute bit unless it's already set going in.

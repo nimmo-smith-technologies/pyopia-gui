@@ -3,8 +3,7 @@
 
 import asyncio
 import csv
-import importlib
-import inspect
+import importlib  # noqa: F401 used by resolve_pipeline_class, exec()-ed from a string below - see its comment
 import itertools
 import json
 import os
@@ -570,27 +569,35 @@ def read_pinned_version(project_dir: Path, config_filename: str = "config.toml")
     return result.stdout.strip() or None
 
 
+# resolve_pipeline_class, parse_numpydoc_params, and docstring_summary are defined from
+# literal source strings below, not as plain `def` + `inspect.getsource()` to embed them
+# into the Docker-side scripts further down - inspect.getsource() can't read a function's
+# source from inside a PyInstaller-frozen executable (no real .py text ships inside a
+# compiled build), confirmed by a real frozen build crashing on startup with "OSError:
+# could not get source code" the instant this module was imported. exec()-ing the string
+# here still gives a real, directly unit-testable function - what's tested is exactly
+# what gets shipped into the container.
+_RESOLVE_PIPELINE_CLASS_SRC = r'''
 def resolve_pipeline_class(pipeline_class: str):
     """Import and return the class a `pipeline_class` dotted path (e.g.
     'pyopia.process.Segment') names.
 
     Same resolution PyOPIA's own `pipeline.py` uses internally to load a step's class.
-    Defined as a real top-level function, not embedded script text, so it has real unit
-    tests independent of Docker/PyOPIA - its source is embedded verbatim into the
-    Docker-side scripts below via `inspect.getsource`, so what's tested is what runs.
     """
     classname = pipeline_class.rsplit(".", 1)[-1]
     modulename = pipeline_class.rsplit(".", 1)[0]
     return getattr(importlib.import_module(modulename), classname)
+'''
+exec(_RESOLVE_PIPELINE_CLASS_SRC)  # noqa: S102 - see comment above
 
 
-def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
+_PARSE_NUMPYDOC_PARAMS_SRC = r'''
+def parse_numpydoc_params(doc):
     """Pull {param_name: description} out of a numpydoc-style docstring's "Parameters" section.
 
-    numpydoc sections look like "Heading\\n----...\\n" - find every such heading, then take
+    numpydoc sections look like "Heading\n----...\n" - find every such heading, then take
     the lines between the "Parameters" heading and whichever heading comes next (usually
-    "Returns"). Embedded verbatim into `_INTROSPECT_STEPS_SCRIPT` below via
-    `inspect.getsource`, so what's unit-tested here is what actually runs.
+    "Returns").
     """
     if not doc:
         return {}
@@ -608,9 +615,9 @@ def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
             break
     if start is None:
         return {}
-    params: dict[str, str] = {}
-    current: str | None = None
-    desc: list[str] = []
+    params = {}
+    current = None
+    desc = []
     for line in lines[start:end]:
         if line.strip() and not line[:1].isspace():
             if current:
@@ -621,9 +628,12 @@ def parse_numpydoc_params(doc: str | None) -> dict[str, str]:
     if current:
         params[current] = " ".join(desc).strip()
     return params
+'''
+exec(_PARSE_NUMPYDOC_PARAMS_SRC)  # noqa: S102 - see comment above
 
 
-def docstring_summary(doc: str | None) -> str:
+_DOCSTRING_SUMMARY_SRC = r'''
+def docstring_summary(doc):
     """The introductory paragraph of a numpydoc-style docstring, before any
     "Parameters"/"Returns" section. Strips Sphinx cross-reference markup
     (`:class:`x``, `:func:`x``) down to the bare name, since that's meant for
@@ -631,12 +641,14 @@ def docstring_summary(doc: str | None) -> str:
     """
     if not doc:
         return ""
-    paragraph: list[str] = []
+    paragraph = []
     for line in doc.splitlines():
         if not line.strip():
             break
         paragraph.append(line.strip())
     return re.sub(r":\w+:`([^`]+)`", r"\1", " ".join(paragraph))
+'''
+exec(_DOCSTRING_SUMMARY_SRC)  # noqa: S102 - see comment above
 
 
 # Runs inside the project's own pinned PyOPIA image, so the parameter schema it reports
@@ -647,11 +659,11 @@ def docstring_summary(doc: str | None) -> str:
 _INTROSPECT_STEPS_SCRIPT = f"""
 import importlib, inspect, json, re, sys, tomllib
 
-{inspect.getsource(resolve_pipeline_class)}
+{_RESOLVE_PIPELINE_CLASS_SRC}
 
-{inspect.getsource(parse_numpydoc_params)}
+{_PARSE_NUMPYDOC_PARAMS_SRC}
 
-{inspect.getsource(docstring_summary)}
+{_DOCSTRING_SUMMARY_SRC}
 
 def jsonable(value):
     try:
@@ -749,7 +761,7 @@ def introspect_config_steps(project_dir: Path, config_filename: str = "config.to
 _VERIFY_STEP_CONSTRUCTS_SCRIPT = f"""
 import importlib, json, sys
 
-{inspect.getsource(resolve_pipeline_class)}
+{_RESOLVE_PIPELINE_CLASS_SRC}
 
 pipeline_class, kwargs = json.loads(sys.argv[1])
 try:
@@ -941,7 +953,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from PIL import Image
 
-{inspect.getsource(resolve_pipeline_class)}
+{_RESOLVE_PIPELINE_CLASS_SRC}
 
 with open(sys.argv[1], "rb") as f:
     config = tomllib.load(f)
@@ -1159,6 +1171,9 @@ def required_background_context(config: dict) -> int:
     return 0
 
 
+# See the comment above _RESOLVE_PIPELINE_CLASS_SRC for why these are exec()-ed from a
+# literal string rather than plain `def` + `inspect.getsource()`.
+_SUBSTITUTE_BACKGROUND_STEPS_SRC = r'''
 def _substitute_background_steps(config: dict) -> tuple[dict, bool]:
     """Replace any step whose `pipeline_class` is under `pyopia.background.*` with
     `CorrectBackgroundNone` (PyOPIA's own documented no-op substitute) - the fallback
@@ -1170,9 +1185,7 @@ def _substitute_background_steps(config: dict) -> tuple[dict, bool]:
     Matched by `pipeline_class` module prefix, not dict key name - a project's
     background step can be named anything, or be absent entirely. Doesn't mutate
     `config`. Returns `(new_config, any_step_was_replaced)` so the caller can show a
-    caveat only when it's actually relevant. Embedded verbatim into
-    `_PREVIEW_PIPELINE_SCRIPT` below via `inspect.getsource`, so what's unit-tested
-    here is what actually runs.
+    caveat only when it's actually relevant.
     """
     new_config = json.loads(json.dumps(config))
     steps = new_config.get("steps")
@@ -1184,8 +1197,11 @@ def _substitute_background_steps(config: dict) -> tuple[dict, bool]:
             steps[name] = {"pipeline_class": "pyopia.background.CorrectBackgroundNone"}
             replaced = True
     return new_config, replaced
+'''
+exec(_SUBSTITUTE_BACKGROUND_STEPS_SRC)  # noqa: S102 - see comment above
 
 
+_REMOVE_OUTPUT_STEPS_SRC = r'''
 def _remove_output_steps(config: dict) -> dict:
     """Drop any step whose `pipeline_class` is under `pyopia.io.*` (e.g. `StatsToDisc`)
     entirely, for single-image preview purposes only.
@@ -1196,7 +1212,7 @@ def _remove_output_steps(config: dict) -> dict:
     Preview only needs `pipeline.data` in memory, so the step is dropped outright
     rather than substituted with a no-op class. Matched by `pipeline_class` module
     prefix, not step name, same as `_substitute_background_steps`. Doesn't mutate
-    `config`; embedded the same tested-then-embedded way.
+    `config`.
     """
     new_config = json.loads(json.dumps(config))
     steps = new_config.get("steps")
@@ -1208,6 +1224,8 @@ def _remove_output_steps(config: dict) -> dict:
         if not (isinstance(step, dict) and str(step.get("pipeline_class", "")).startswith("pyopia.io."))
     }
     return new_config
+'''
+exec(_REMOVE_OUTPUT_STEPS_SRC)  # noqa: S102 - see comment above
 
 
 # Runs inside the project's own pinned PyOPIA image, against exactly one raw file (plus,
@@ -1230,9 +1248,9 @@ from matplotlib.patches import Rectangle
 from PIL import Image
 import pyopia.pipeline
 
-{inspect.getsource(_substitute_background_steps)}
+{_SUBSTITUTE_BACKGROUND_STEPS_SRC}
 
-{inspect.getsource(_remove_output_steps)}
+{_REMOVE_OUTPUT_STEPS_SRC}
 
 # PyOPIA's own Pipeline already logs a real, meaningful progress trail via the
 # stdlib root logger - "Initialising pipeline", "Running pipeline step: X" for

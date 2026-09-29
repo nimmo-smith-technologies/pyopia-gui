@@ -23,6 +23,20 @@ the code.
 
 Start the dev server (`uv run pyopia-gui`) and work top to bottom.
 
+## Before a release: the packaged native app
+
+Everything below runs against the dev server (`uv run pyopia-gui`), which always
+works even when the *packaged* native app doesn't - it runs from real source, not a
+frozen executable. CI's `build-native.yml` smoke-tests each build automatically
+(confirms it starts), but that alone doesn't prove the window actually renders or
+works. Before any release, download (or locally build) at least one platform's real
+native app and actually run it:
+
+- [ ] The app window opens and shows the Project tab - not a crash dialog, not a
+      blank/frozen window.
+- [ ] **Create example project** and **Run processing** both work end-to-end, the
+      same as in the dev server.
+
 ## Project tab
 
 - [ ] Folder field starts pre-filled with a sensible default; **Browse…**
