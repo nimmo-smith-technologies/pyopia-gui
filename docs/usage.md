@@ -202,7 +202,9 @@ the montage - pick a variable, set a min/max range, and click **Apply filter** t
 restrict the montage, EcoTaxa export, and summary stats/chart to particles within
 that range. A banner shows while a filter's active, with a **Clear filter** button
 to revert. A filtered montage/EcoTaxa export is saved under its own `-filtered`
-filename, so it doesn't overwrite the full-dataset one.
+filename, so it doesn't overwrite the full-dataset one. When you save a filtered montage,
+EcoTaxa export or size-distribution CSV elsewhere, the suggested filename says what it
+was filtered by (e.g. `montage-depth_5_to_10.png`).
 
 ## Choosing (and switching) a PyOPIA version
 

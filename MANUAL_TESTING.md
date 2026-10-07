@@ -200,6 +200,9 @@ native app and actually run it:
 - [ ] With a filter active, **Generate montage** and **Export to EcoTaxa…**
       write to `montage-filtered.png`/`ecotaxa_export-filtered.zip` (not the
       unfiltered filenames) and contain only the filtered particle count.
+- [ ] With a filter active, the **Save as…** / **Export size distribution as CSV…**
+      dialogs suggest a filename that includes the filter (e.g.
+      `montage-depth_5_to_10.png`), with no extra dots beyond the extension.
 - [ ] **Clear filter** reverts particle count/d50/chart back to the full
       dataset.
 - [ ] Leaving Min or Max blank, or Min greater than Max, refuses **Apply

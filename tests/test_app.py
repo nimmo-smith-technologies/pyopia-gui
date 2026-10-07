@@ -2586,3 +2586,66 @@ def test_scaled_montage_save_name_has_no_extra_dots(rel_scale: object, expected:
     from pyopia_gui.main import _scaled_montage_save_name
 
     assert _scaled_montage_save_name(rel_scale) == expected
+
+
+@pytest.mark.parametrize(
+    ("filename", "active_filter", "expected"),
+    [
+        ("montage.png", None, "montage.png"),
+        ("montage.png", ("depth", 5.0, 10.0), "montage-depth_5_to_10.png"),
+        ("size_distribution.csv", ("depth", 1.5, 9.25), "size_distribution-depth_1p5_to_9p25.csv"),
+        ("ecotaxa_export.zip", ("depth", -3.0, -1.0), "ecotaxa_export-depth_-3_to_-1.zip"),
+        ("montage.png", ("Depth (m)", 0.0, 2.0), "montage-Depth_m_0_to_2.png"),
+    ],
+)
+def test_filtered_save_name_describes_the_filter_without_extra_dots(
+    filename: str, active_filter: tuple[str, float, float] | None, expected: str
+) -> None:
+    from pyopia_gui.main import _filtered_save_name
+
+    assert _filtered_save_name(filename, active_filter) == expected
+
+
+@pytest.mark.parametrize(
+    ("button", "expected_name"),
+    [
+        ("Save montage as…", "montage-depth_5_to_9.png"),
+        ("Export size distribution as CSV…", "size_distribution-depth_5_to_9.csv"),
+    ],
+)
+async def test_results_tab_suggests_filter_describing_names_when_saving_filtered_outputs(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, button: str, expected_name: str
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: None)
+    tmp_path.joinpath("config.toml").write_text(
+        "[general]\npixel_size = 24\n\n"
+        '[steps.output]\noutput_datafile = "processed/demo"\nappend = false\n'
+        'auxillary_data_file = "aux.csv"\n'
+    )
+    (tmp_path / "aux.csv").write_text("% COMMENT\n% COMMENT\n,\n,\ntime,depth\n2026-01-01T00:00:00,1.0\n")
+    (tmp_path / "processed").mkdir()
+    dataset = xr.Dataset(
+        {
+            "equivalent_diameter": ("index", [2.72, 3.21, 4.0]),
+            "timestamp": ("index", pd.to_datetime(["2026-01-01T00:00:00"] * 3)),
+            "depth": ("index", [1.0, 5.0, 9.0]),
+        },
+        coords={"index": [0, 1, 2]},
+    )
+    dataset.to_netcdf(tmp_path / "processed" / "demo-STATS.nc", engine="h5netcdf")
+    (tmp_path / "montage-filtered.png").write_bytes(b"a filtered montage")
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await user.should_see("3 particles found")
+    user.find(kind=ui.number, content="Min").elements.pop().value = 5.0
+    user.find(kind=ui.number, content="Max").elements.pop().value = 9.0
+    user.find(kind=ui.button, content="Apply filter").click()
+    await user.should_see("2 particles found")
+
+    user.find(kind=ui.button, content=button).click()
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.button, content="Save here").click()
+    await asyncio.sleep(0.5)
+    assert (tmp_path / expected_name).is_file()

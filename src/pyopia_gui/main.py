@@ -4,6 +4,7 @@
 import json
 import math
 import os
+import re
 import shutil
 import tomllib
 import webbrowser
@@ -82,6 +83,19 @@ def _toml_value_from_text(text: str) -> object:
 def _text_from_toml_value(value: object) -> str:
     """The inverse of `_toml_value_from_text` - how a non-scalar value is shown for editing."""
     return tomli_w.dumps({"_": value}).removeprefix("_ = ").strip()
+
+
+def _filtered_save_name(filename: str, active_filter: tuple[str, float, float] | None) -> str:
+    """The suggested filename for saving `filename` made with the aux-data `active_filter`
+    (column, low, high) applied - e.g. `montage.png` filtered to depth 5-10 becomes
+    `montage-depth_5_to_10.png`. Decimal points become "p" so the only dot is the
+    extension's, and anything in the column name that isn't safe in a filename becomes "_"."""
+    if not active_filter:
+        return filename
+    column, low, high = active_filter
+    column = re.sub(r"[^A-Za-z0-9]+", "_", column).strip("_")
+    low, high = (f"{value:.4g}".replace(".", "p") for value in (low, high))
+    return f"{Path(filename).stem}-{column}_{low}_to_{high}{Path(filename).suffix}"
 
 
 def _scaled_montage_save_name(rel_scale: object) -> str:
@@ -747,7 +761,7 @@ def index() -> None:
                 ui.notify(f"{what.capitalize()} saved to {destination}", type="positive")
 
             async def save_montage_as() -> None:
-                await save_copy_as(montage_path, "montage")
+                await save_copy_as(montage_path, "montage", _filtered_save_name("montage.png", active_filter))
 
             if montage_path.is_file():
                 # force_reload: the file keeps the same URL when regenerated, and the browser
@@ -863,7 +877,9 @@ def index() -> None:
                     report_failure(lines, "EcoTaxa export failed", image)
 
             async def save_ecotaxa_export_as() -> None:
-                destination = await _choose_save_location(project_dir, ecotaxa_filename)
+                destination = await _choose_save_location(
+                    project_dir, _filtered_save_name("ecotaxa_export.zip", active_filter)
+                )
                 if destination is None:
                     return
                 try:
@@ -965,7 +981,9 @@ def index() -> None:
                 ui.echart(chart_options).classes("w-full max-w-2xl aspect-square").style("height: auto")
 
                 async def export_size_distribution_csv() -> None:
-                    destination = await _choose_save_location(project_dir, "size_distribution.csv")
+                    destination = await _choose_save_location(
+                        project_dir, _filtered_save_name("size_distribution.csv", active_filter)
+                    )
                     if destination is None:
                         return
                     try:
