@@ -211,7 +211,8 @@ the montage says how many are missing - a larger Relative scale gives them more 
 needs PyOPIA 2.18.0 or newer, and can't be filtered by aux data yet.
 
 Further down: particle count, d50 (median particle size), and a size-distribution
-chart.
+chart. PyOPIA computes these in its own container, so they appear a second or two
+after the tab opens, and need a project processed with PyOPIA 2.18.0 or newer.
 
 The particle count only covers images that were actually analysed. When a project
 averages the background over the preceding images (the holo and SilCam examples do),

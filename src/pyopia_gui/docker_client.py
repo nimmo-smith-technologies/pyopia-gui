@@ -610,7 +610,7 @@ def pixel_size(project_dir: Path, config_filename: str = "config.toml") -> float
     """The `general.pixel_size` (microns per pixel) from the project's config.
 
     Needed to convert the raw pixel measurements in a project's stats file into real-world
-    units (see vendored_stats.py) - the same config key PyOPIA's own CLI reads for montage
+    units (see `summarize_stats`) - the same config key PyOPIA's own CLI reads for montage
     and plotting (`config["general"]["pixel_size"]` in pyopia/cli.py).
     """
     return _load_config(project_dir, config_filename)["general"]["pixel_size"]
@@ -926,7 +926,7 @@ exec(_DOCSTRING_SUMMARY_SRC)  # noqa: S102 - see comment above
 
 # Runs inside the project's own pinned PyOPIA image, so the parameter schema it reports
 # always matches the exact version actually processing this project - no local copy of
-# PyOPIA's step classes to keep in sync (unlike vendored_stats.py, see ADR 0007).
+# PyOPIA's step classes to keep in sync.
 # Everything below `parse_numpydoc_params` has to be stdlib-only: this only has whatever's
 # already installed in PyOPIA's own image to work with, not pyopia-gui's own dependencies.
 _INTROSPECT_STEPS_SCRIPT = f"""

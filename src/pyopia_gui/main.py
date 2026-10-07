@@ -18,7 +18,7 @@ import tomli_w
 from nicegui import background_tasks, ui
 from nicegui import run as nicegui_run
 
-from pyopia_gui import __version__, docker_client, run_lock, vendored_stats, version_check
+from pyopia_gui import __version__, docker_client, run_lock, version_check
 
 # Overridable via env var, same pattern as docker_client.PYOPIA_IMAGE - not a
 # user-facing feature, but the only way to override this at all: NiceGUI's test
@@ -40,10 +40,9 @@ REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
 LICENSE_URL = f"{REPO_URL}/blob/main/LICENSE"
 THIRD_PARTY_LICENSES_URL = f"{REPO_URL}/blob/main/THIRD_PARTY_LICENSES.md"
 
-# Failure modes for reading/computing a project's summary stats: a different pinned
-# PyOPIA version's stats schema not matching what's vendored (KeyError), a stats file
-# still being written by a concurrent run or otherwise unreadable (OSError/ValueError),
-# or a malformed config.toml (TOMLDecodeError/TypeError, matching docker_client's own
+# Failure modes for reading a project's config/stats: a stats file still being written by
+# a concurrent run or otherwise unreadable (OSError/ValueError), or a missing key or
+# malformed config.toml (KeyError/TOMLDecodeError/TypeError, matching docker_client's own
 # config-reading error handling).
 _STATS_READ_ERRORS = (KeyError, ValueError, OSError, tomllib.TOMLDecodeError, TypeError)
 
@@ -999,8 +998,9 @@ def index() -> None:
                         docker_client.image_for_version(pinned),
                     )
                 else:
-                    summary = await nicegui_run.io_bound(
-                        vendored_stats.summarize, str(stats_path), px_size, active_filter
+                    raise docker_client.StatsSummaryError(
+                        f"this needs PyOPIA {docker_client.MIN_RECENT_CLI_VERSION} or newer - "
+                        f"this project was processed with v{pinned}"
                     )
             except (*_STATS_READ_ERRORS, docker_client.StatsSummaryError) as e:
                 ui.label(f"Couldn't compute summary statistics: {e}").classes("text-sm text-red")

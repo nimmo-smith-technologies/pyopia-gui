@@ -1,7 +1,7 @@
 # ADR 0007 — Vendor a local copy of PyOPIA's statistics functions for the Results tab
 
 **Date:** 14 August 2026
-**Status:** Accepted
+**Status:** Superseded by [ADR 0009](0009-2026-10-07-summary-statistics-inside-the-pyopia-image.md)
 **Decider:** Alex Nimmo Smith, Nimmo Smith Technologies Limited
 
 ---

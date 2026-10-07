@@ -13,7 +13,7 @@ from nicegui import ui
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 
-from pyopia_gui import __version__, docker_client, run_lock, vendored_stats, version_check
+from pyopia_gui import __version__, docker_client, run_lock, version_check
 
 
 async def _click_through_pinned_version_dialog_if_shown(user: User) -> None:
@@ -1235,26 +1235,20 @@ async def test_results_tab_saves_a_scaled_montage_under_a_name_containing_its_sc
     assert (exports_dir / "montage-scaled-rel0p4.png").read_bytes() == b"a scaled montage"
 
 
-async def test_results_tab_summarises_locally_for_a_version_without_summary_stats(
+async def test_results_tab_explains_summary_stats_need_a_recent_pyopia(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # PyOPIA's summary_from_stats arrived in 2.18.0 - a project processed with an older
-    # version is still summarised by the local copy, not left without statistics.
     monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
     monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.17.0")
     _write_config_with_pixel_size(tmp_path)
     (tmp_path / "processed").mkdir()
     (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
-    summary = docker_client.StatsSummary(
-        particle_count=7, images_with_particles=2, d50_microns=42.5, dias=[], number_distribution=[]
-    )
-    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
 
     await user.open("/")
     folder_input = user.find(ui.input).elements.pop()
     folder_input.value = str(tmp_path)
 
-    await user.should_see("7 particles found")
+    await user.should_see("Couldn't compute summary statistics: this needs PyOPIA 2.18.0 or newer")
 
 
 async def test_results_tab_generates_a_scaled_montage_with_the_chosen_relative_scale(

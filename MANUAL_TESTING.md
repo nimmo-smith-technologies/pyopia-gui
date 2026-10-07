@@ -196,9 +196,10 @@ native app and actually run it:
 - [ ] Particle count, d50 and the size-distribution chart appear (a second or
       two after the tab opens - PyOPIA computes them in its container for
       projects processed with 2.18.0+); the same numbers as before for an
-      existing project, and a project processed with 2.17.0 still shows them
-      (computed by the local copy). With an aux-data filter applied they narrow
-      to match; a failure shows "Couldn't compute summary statistics: …".
+      existing project. A project processed with 2.17.0 shows "Couldn't compute
+      summary statistics: this needs PyOPIA 2.18.0 or newer". With an aux-data
+      filter applied they narrow to match; a failure shows "Couldn't compute
+      summary statistics: …".
 - [ ] **Generate montage** / **Regenerate montage** produce a real montage
       image.
 - [ ] **Generate scaled montage** (project processed with PyOPIA 2.18.0+)
