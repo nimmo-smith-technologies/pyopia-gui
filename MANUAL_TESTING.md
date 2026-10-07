@@ -126,6 +126,11 @@ native app and actually run it:
       a PyOPIA version; on one with existing results, shows the pinned
       version (with a newer-version note if applicable) before running.
 - [ ] Real run streams log output live and finishes with a status/notify.
+- [ ] **Cancel processing** appears only while a run is going. Confirming stops the run's
+      container within a few seconds (`docker ps` shows no `pyopia-gui-…` container), removes
+      the partial output folder and the progress and `.pyopia_gui_running` files, shows
+      "Processing cancelled", and **Run processing** works again straight away. **Keep
+      running** leaves the run alone.
 - [ ] While a run is going (`.pyopia_gui_running` is in the project folder), clicking
       **Run processing** from a second browser window - or a second copy of the app - on the
       same project shows "This project is already being processed" with **Cancel** and

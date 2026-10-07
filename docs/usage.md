@@ -42,6 +42,10 @@ tabs - each one only usable once it's actually relevant:
    processed stats file). If you point pyopia-gui at an already-processed project,
    it jumps here automatically and shows whatever's already there - see
    [Reviewing results](#reviewing-results) below.
+While a run is going, a **Cancel processing** button appears next to **Run processing**.
+It asks for confirmation, then stops the run and discards what it had produced so far - a
+partly processed dataset would give misleading statistics - so you can start again.
+
 Only one run can use a project folder at a time: while a run is going, pyopia-gui keeps a
 small `.pyopia_gui_running` marker in the folder, and starting another run - from a second
 window, or another copy of the app - asks first, since two runs writing to the same folder

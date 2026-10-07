@@ -955,6 +955,54 @@ async def test_a_marker_left_by_a_run_that_died_is_replaced_without_asking(
     await user.should_see("Done")
 
 
+async def test_cancelling_a_run_stops_its_container_and_discards_partial_results(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    monkeypatch.setattr(docker_client, "container_is_running", lambda name: False)
+    _write_config_with_pixel_size(tmp_path)
+    run_stopped = asyncio.Event()
+    stopped_containers: list[str] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        assert "process" in command
+        (tmp_path / "processed").mkdir(exist_ok=True)
+        (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"half-written")
+        await run_stopped.wait()
+        return 137  # what `docker run` exits with once its container has been stopped
+
+    def fake_stop_container(name: str, *args: object, **kwargs: object) -> bool:
+        stopped_containers.append(name)
+        return True
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    monkeypatch.setattr(docker_client, "stop_container", fake_stop_container)
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await user.should_not_see("Cancel processing")
+
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("Cancel processing")
+
+    user.find(kind=ui.button, content="Cancel processing").click()
+    await asyncio.sleep(0.3)
+    user.find(marker="confirm-cancel-processing").click()
+    await asyncio.sleep(0.3)
+    run_stopped.set()
+
+    await user.should_see("Processing cancelled")
+    assert len(stopped_containers) == 1
+    assert stopped_containers[0].startswith("pyopia-gui-")
+    assert not (tmp_path / "processed").exists()
+    assert not (tmp_path / run_lock.LOCK_FILENAME).exists()
+    await user.should_not_see("Processing failed")
+    assert user.find(kind=ui.button, content="Run processing").elements.pop().enabled
+
+
 async def test_run_processing_clears_stale_output_folder_before_running(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

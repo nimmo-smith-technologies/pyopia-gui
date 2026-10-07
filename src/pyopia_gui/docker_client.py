@@ -307,6 +307,33 @@ def container_is_running(name: str) -> bool:
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def container_name_in(command: list[str]) -> str | None:
+    """The `--name` a `docker run` command gives its container, if any."""
+    try:
+        return command[command.index("--name") + 1]
+    except (ValueError, IndexError):
+        return None
+
+
+def stop_container(name: str, grace_seconds: int = 2) -> bool:
+    """Stop the running container called `name`, killing it after `grace_seconds`.
+
+    Killing the `docker run` command alone does not stop its container - it carries on
+    writing into the mounted folder. Returns whether Docker reported it stopped (False if
+    it had already finished, or Docker couldn't be reached).
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "stop", "--time", str(grace_seconds), name],
+            capture_output=True,
+            timeout=60,
+            **_no_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def process_command(
     project_dir: Path,
     config_filename: str = "config.toml",
@@ -1832,6 +1859,9 @@ async def run_streamed(command: list[str], on_line: Callable[[str], None]) -> in
         try:
             raw_line = await asyncio.wait_for(process.stdout.readline(), timeout=INACTIVITY_TIMEOUT_SECONDS)
         except TimeoutError:
+            container_name = container_name_in(command)
+            if container_name:
+                await asyncio.to_thread(stop_container, container_name)
             process.kill()
             await process.wait()
             on_line(

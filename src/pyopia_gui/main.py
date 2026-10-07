@@ -462,6 +462,22 @@ async def _confirm_clear_run_lock(holder: dict) -> bool:
     return bool(await dialog)
 
 
+async def _confirm_cancel_processing() -> bool:
+    """Ask whether to stop the processing run that's going, discarding what it has done so far."""
+    with ui.dialog() as dialog, ui.card():
+        ui.label("Cancel processing?").classes("text-lg font-medium")
+        ui.label(
+            "The run will stop, and the results it has produced so far will be discarded - "
+            "a partly processed dataset would give misleading statistics."
+        ).classes("text-sm text-gray-500")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Keep running", on_click=lambda: dialog.submit(False))
+            ui.button("Cancel processing", on_click=lambda: dialog.submit(True)).props("color=negative").mark(
+                "confirm-cancel-processing"
+            )
+    return bool(await dialog)
+
+
 async def _show_update_if_newer(update_link: ui.link) -> None:
     latest = await nicegui_run.io_bound(version_check.check_for_newer_release, __version__)
     if latest:
@@ -596,8 +612,12 @@ def index() -> None:
             num_chunks_input.on_value_change(update_strategy_enabled)
             update_strategy_enabled()
 
-            run_button = ui.button("Run processing")
-            run_button.tooltip("Runs PyOPIA processing on the folder above")
+            with ui.row().classes("items-center gap-2"):
+                run_button = ui.button("Run processing")
+                run_button.tooltip("Runs PyOPIA processing on the folder above")
+                cancel_button = ui.button("Cancel processing").props("outline color=negative")
+                cancel_button.tooltip("Stops the run that's going and discards what it has produced so far")
+                cancel_button.visible = False
 
         with ui.tab_panel("results"):
             results_busy_note = ui.label(
@@ -1889,6 +1909,21 @@ def index() -> None:
             report_failure(lines, "Failed to create example project", image)
         create_button.enable()
 
+    current_run: dict = {"container": None, "cancelled": False}
+
+    async def on_cancel() -> None:
+        container = current_run["container"]
+        if not container or not await _confirm_cancel_processing():
+            return
+        current_run["cancelled"] = True
+        cancel_button.disable()
+        set_status("Cancelling…", busy=True)
+        stopped = await nicegui_run.io_bound(docker_client.stop_container, container)
+        if not stopped and await nicegui_run.io_bound(docker_client.container_is_running, container):
+            current_run["cancelled"] = False
+            cancel_button.enable()
+            ui.notify("Couldn't stop the run - check that Docker is running.", type="negative")
+
     async def on_run() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         error = docker_client.validate_project(project_dir)
@@ -2003,6 +2038,9 @@ def index() -> None:
         if progress_file:
             await nicegui_run.io_bound(docker_client.clear_progress_files, project_dir, num_chunks)
             progress_task = background_tasks.create(show_progress(), name="process-progress")
+        current_run.update(container=container_name, cancelled=False)
+        cancel_button.enable()
+        cancel_button.visible = True
         try:
             exit_code, lines = await run_streamed_to_log(
                 docker_client.process_command(
@@ -2015,10 +2053,20 @@ def index() -> None:
                 )
             )
         finally:
+            cancel_button.visible = False
+            current_run["container"] = None
             if progress_task:
                 progress_task.cancel()
                 process_progress_bar.visible = False
                 await nicegui_run.io_bound(docker_client.clear_progress_files, project_dir, num_chunks)
+        if current_run["cancelled"] and exit_code != 0:
+            await nicegui_run.io_bound(shutil.rmtree, output_dir, ignore_errors=True)
+            log.push("→ Processing cancelled - partial results discarded", classes="text-yellow-300 font-bold")
+            set_status("Processing cancelled - partial results discarded", busy=False)
+            ui.notify("Processing cancelled", type="warning")
+            await refresh_project_state()
+            run_button.enable()
+            return
         if exit_code != 0:
             report_failure(lines, "Processing failed", image)
             run_button.enable()
@@ -2055,6 +2103,7 @@ def index() -> None:
 
     create_button.on_click(on_create)
     run_button.on_click(on_run)
+    cancel_button.on_click(on_cancel)
 
 
 def run() -> None:

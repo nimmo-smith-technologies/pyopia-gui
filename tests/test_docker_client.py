@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import asyncio
 import inspect
 import io
 import json
@@ -1555,3 +1556,67 @@ def test_skipped_particles_reads_the_scaled_montage_warning() -> None:
         53,
     )
     assert docker_client.skipped_particles(["LOAD STATS", "STORING MONTAGE"]) is None
+
+
+def test_process_command_names_the_container_so_it_can_be_found_and_stopped(tmp_path: Path) -> None:
+    command = docker_client.process_command(tmp_path, container_name="pyopia-gui-ab12")
+
+    assert docker_client.container_name_in(command) == "pyopia-gui-ab12"
+    assert docker_client.container_name_in(docker_client.process_command(tmp_path)) is None
+
+
+def test_stop_container_uses_docker_stop_with_a_short_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        seen.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert docker_client.stop_container("pyopia-gui-ab12")
+    assert seen == [["docker", "stop", "--time", "2", "pyopia-gui-ab12"]]
+
+
+def test_stop_container_reports_failure_when_the_container_is_already_gone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(command, 1))
+
+    assert not docker_client.stop_container("pyopia-gui-ab12")
+
+
+async def test_a_stalled_run_stops_its_container_not_just_the_docker_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Killing the `docker run` command alone leaves its container running and writing.
+    stopped: list[str] = []
+    killed: list[bool] = []
+
+    class FakeStdout:
+        async def readline(self) -> bytes:
+            await asyncio.sleep(30)
+            return b""
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def kill(self) -> None:
+            killed.append(True)
+
+        async def wait(self) -> int:
+            return -9
+
+    async def fake_create_subprocess_exec(*args: str, **kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(docker_client, "INACTIVITY_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(docker_client, "stop_container", lambda name, *a, **k: stopped.append(name) or True)
+    lines: list[str] = []
+
+    exit_code = await docker_client.run_streamed(
+        docker_client.process_command(tmp_path, container_name="pyopia-gui-ab12"), lines.append
+    )
+
+    assert exit_code == -1
+    assert stopped == ["pyopia-gui-ab12"]
+    assert killed == [True]
