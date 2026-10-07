@@ -8,18 +8,13 @@ the code.
 
 ## Getting sample data
 
-- **Silcam**: use the **Create example project** button on the Project tab -
-  it downloads a real 10-image example dataset for you, no separate setup
-  needed.
-- **Holo**: pyopia-gui doesn't have a one-click holo example yet - `init-project
-  --example-data --instrument holo` currently still downloads silcam data on
-  the pinned image (tracked as [pyopia-gui#7](https://github.com/nimmo-smith-technologies/pyopia-gui/issues/7),
-  blocked on upstream PyOPIA sample-data work). In the meantime, get real holo
-  images from [PyOPIA's own repo](https://github.com/SINTEF/pyopia): clone it,
-  then point a project's folder at its `notebooks/holo_test_data_01/` images.
-  Use the Configuration tab's **Generate default config…** with instrument
-  type "holo" and a matching raw files pattern (e.g. `*.pgm`) to produce the
-  `config.toml` itself - no need to hand-copy PyOPIA's own example config.
+- **Silcam**: use the **Create example project** button on the Project tab,
+  with Instrument set to SilCam - it downloads a real 10-image example dataset
+  for you, no separate setup needed.
+- **Holo**: the same button with Instrument set to Holographic (holo) -
+  downloads real holograms and a matching config (needs PyOPIA 2.18.0+, so
+  older versions aren't offered once holo is chosen). A uvp example isn't
+  available yet (needs real sample data sourced upstream, pyopia#436).
 
 Start the dev server (`uv run pyopia-gui`) and work top to bottom.
 
@@ -43,6 +38,10 @@ native app and actually run it:
       opens a working folder picker.
 - [ ] **Create example project** against a fresh empty folder succeeds and
       switches to the Process tab.
+- [ ] Choosing **Holographic (holo)** in the dialog narrows the PyOPIA version
+      list to 2.18.0+ (back to the full list with SilCam); creating one
+      downloads real holograms into `images/holo_test_data_01/` and a config
+      whose `raw_files` matches them (not `*.silc`).
 - [ ] Pointing the folder field at an existing valid project enables
       Explorer/Configuration/Preview/Process; an invalid folder disables them.
 

@@ -43,6 +43,31 @@ def image_for_version(version: str | None) -> str:
     return f"ghcr.io/{_OFFICIAL_REPO}:v{version}"
 
 
+# PyOPIA 2.18.0 added `process --progress-file`, `summary-stats`, `make-montage-scaled`, and
+# `init-project --instrument holo --example-data` - older images don't have them.
+MIN_RECENT_CLI_VERSION = "2.18.0"
+
+
+def image_version(image: str) -> str | None:
+    """The bare PyOPIA version an image reference pins (`...:v2.17.0` -> "2.17.0"), or None
+    for a floating tag like `:latest`, or anything else that isn't a version."""
+    tag = image.rpartition(":")[2]
+    try:
+        _version_tuple(tag)
+    except ValueError:
+        return None
+    return tag.lstrip("vV")
+
+
+def supports_recent_cli(version: str | None) -> bool:
+    """Whether a PyOPIA `version` has the commands/options added in MIN_RECENT_CLI_VERSION.
+
+    An unknown version (None - `:latest`, or a custom image) is assumed to be current, so
+    only a version that's positively known to be older is treated as lacking them.
+    """
+    return version is None or _version_tuple(version) >= _version_tuple(MIN_RECENT_CLI_VERSION)
+
+
 class DockerStatus(Enum):
     NOT_INSTALLED = "not_installed"
     NOT_RUNNING = "not_running"
@@ -202,9 +227,15 @@ def _user_args() -> list[str]:
     return ["--user", f"{os.getuid()}:{os.getgid()}"]
 
 
-def init_project_command(parent_dir: Path, project_name: str, image: str = PYOPIA_IMAGE) -> list[str]:
-    """Build the command to create a new example PyOPIA project named `project_name` under `parent_dir`."""
-    return [
+def init_project_command(
+    parent_dir: Path, project_name: str, image: str = PYOPIA_IMAGE, instrument: str = "silcam"
+) -> list[str]:
+    """Build the command to create a new example PyOPIA project named `project_name` under `parent_dir`.
+
+    `--instrument` is only passed for a non-silcam instrument (PyOPIA's own default), so the
+    default silcam command is unchanged and still works against older images.
+    """
+    command = [
         "docker",
         "run",
         "--rm",
@@ -214,6 +245,9 @@ def init_project_command(parent_dir: Path, project_name: str, image: str = PYOPI
         project_name,
         "--example-data",
     ]
+    if instrument != "silcam":
+        command += ["--instrument", instrument]
+    return command
 
 
 def generate_config_command(

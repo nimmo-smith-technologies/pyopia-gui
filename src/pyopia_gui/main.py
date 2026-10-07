@@ -138,7 +138,7 @@ async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[boo
     }
 
 
-async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
+async def _confirm_create(project_dir: Path) -> tuple[bool, str | None, str]:
     """Ask the user to confirm the exact resolved path before creating anything there.
 
     The Docker mount already limits what a run can touch on the host to this one
@@ -152,9 +152,14 @@ async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
     Also lets the user pick which PyOPIA version this new project should use, if
     PyOPIA's published versions are reachable - a new project's version is never chosen
     automatically, since someone may deliberately want to match an older project rather
-    than always get the newest. Returns (confirmed, chosen_version); chosen_version is
-    None if there was nothing to choose from (offline, or PYOPIA_GUI_DOCKER_IMAGE
-    already overrides the image entirely) or the dialog was cancelled.
+    than always get the newest. Returns (confirmed, chosen_version, instrument);
+    chosen_version is None if there was nothing to choose from (offline, or
+    PYOPIA_GUI_DOCKER_IMAGE already overrides the image entirely) or the dialog was
+    cancelled.
+
+    Holo example data only exists in PyOPIA versions that support it, so choosing the
+    holo instrument narrows the version choices to those, and disables creating one
+    when no usable version is available (e.g. an overridden image pinned to an older one).
     """
     versions: list[str] = []
     if "PYOPIA_GUI_DOCKER_IMAGE" not in os.environ:
@@ -166,6 +171,10 @@ async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
         ui.label("This creates a new folder at the exact path above and downloads example data into it.").classes(
             "text-sm text-gray-500"
         )
+        instrument_select = ui.select(
+            {"silcam": "SilCam", "holo": "Holographic (holo)"}, value="silcam", label="Instrument"
+        ).classes("w-full")
+        instrument_select.tooltip("Which kind of example data to download, and the matching starting configuration")
         version_select = None
         if versions:
             version_select = ui.select(versions, value=versions[0], label="PyOPIA version").classes("w-full")
@@ -173,12 +182,38 @@ async def _confirm_create(project_dir: Path) -> tuple[bool, str | None]:
                 "Which PyOPIA version to use for this project - it'll keep using this same version "
                 "for consistency, even after newer ones become available"
             )
+        holo_unavailable = ui.label(
+            f"Holographic example data needs PyOPIA {docker_client.MIN_RECENT_CLI_VERSION} or newer, "
+            "which isn't available here."
+        ).classes("text-sm text-red-600")
+        holo_unavailable.set_visibility(False)
         with ui.row().classes("w-full justify-end"):
             ui.button("Cancel", on_click=lambda: dialog.submit(False))
-            ui.button("Create here", on_click=lambda: dialog.submit(True))
+            create_button = ui.button("Create here", on_click=lambda: dialog.submit(True))
+
+        def on_instrument_change() -> None:
+            """Offer only the versions that have the chosen instrument's example data, and block
+            creating one for a version that doesn't (an overridden or unlisted image can't be narrowed)."""
+            holo = instrument_select.value == "holo"
+            if version_select:
+                options = [v for v in versions if not holo or docker_client.supports_recent_cli(v)]
+                version_select.set_options(
+                    options, value=version_select.value if version_select.value in options else (options or [None])[0]
+                )
+                effective_version = version_select.value
+            else:
+                effective_version = docker_client.image_version(docker_client.PYOPIA_IMAGE)
+            blocked = holo and (
+                (version_select is not None and effective_version is None)
+                or not docker_client.supports_recent_cli(effective_version)
+            )
+            holo_unavailable.set_visibility(blocked)
+            create_button.set_enabled(not blocked)
+
+        instrument_select.on_value_change(on_instrument_change)
     confirmed = bool(await dialog)
     chosen_version = version_select.value if (confirmed and version_select) else None
-    return confirmed, chosen_version
+    return confirmed, chosen_version, instrument_select.value
 
 
 def _render_folder_browser(start_dir: Path) -> dict[str, Path]:
@@ -1630,7 +1665,7 @@ def index() -> None:
             )
             return
 
-        confirmed, chosen_version = await _confirm_create(project_dir)
+        confirmed, chosen_version, instrument = await _confirm_create(project_dir)
         if not confirmed:
             return
 
@@ -1647,7 +1682,7 @@ def index() -> None:
             # there's nothing on disk yet for it to read this choice back from.
             chosen_versions_this_session[str(project_dir)] = chosen_version
         image = docker_client.image_for_version(chosen_version)
-        command = docker_client.init_project_command(parent_dir, project_dir.name, image=image)
+        command = docker_client.init_project_command(parent_dir, project_dir.name, image=image, instrument=instrument)
         exit_code, lines = await run_streamed_to_log(command)
         if exit_code == 0:
             set_status("Example project created", busy=False)

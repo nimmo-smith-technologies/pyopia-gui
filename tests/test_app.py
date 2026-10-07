@@ -454,6 +454,77 @@ async def test_create_confirmed_runs_docker(user: User, monkeypatch: pytest.Monk
     user.find(kind=ui.button, content="Create here").click()
 
 
+async def test_create_holo_example_narrows_versions_and_passes_the_instrument(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0", "2.17.0"])
+    target = tmp_path / "new-project"
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(target)
+
+    user.find(kind=ui.button, content="Create example project").click()
+    await user.should_see("Create a new PyOPIA project here?")
+
+    version_select = user.find(kind=ui.select, content="PyOPIA version").elements.pop()
+    assert version_select.options == ["2.18.0", "2.17.0"]
+    user.find(kind=ui.select, content="Instrument").elements.pop().set_value("holo")
+    assert version_select.options == ["2.18.0"]
+
+    user.find(kind=ui.button, content="Create here").click()
+    await asyncio.sleep(0.2)
+
+    command = next(c for c in calls if "init-project" in c)
+    assert "ghcr.io/sintef/pyopia:v2.18.0" in command
+    assert command[-2:] == ["--instrument", "holo"]
+
+
+async def test_create_holo_is_blocked_when_no_listed_version_supports_it(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.17.0"])
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path / "new-project")
+    user.find(kind=ui.button, content="Create example project").click()
+    await user.should_see("Create a new PyOPIA project here?")
+
+    create_button = user.find(kind=ui.button, content="Create here").elements.pop()
+    user.find(kind=ui.select, content="Instrument").elements.pop().set_value("holo")
+    await user.should_see("Holographic example data needs PyOPIA 2.18.0 or newer")
+    assert not create_button.enabled
+
+    user.find(kind=ui.select, content="Instrument").elements.pop().set_value("silcam")
+    assert create_button.enabled
+
+
+async def test_create_holo_is_blocked_for_an_overridden_older_image(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setenv("PYOPIA_GUI_DOCKER_IMAGE", "ghcr.io/sintef/pyopia:v2.17.0")
+    monkeypatch.setattr(docker_client, "PYOPIA_IMAGE", "ghcr.io/sintef/pyopia:v2.17.0")
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path / "new-project")
+    user.find(kind=ui.button, content="Create example project").click()
+    await user.should_see("Create a new PyOPIA project here?")
+
+    user.find(kind=ui.select, content="Instrument").elements.pop().set_value("holo")
+    await user.should_see("Holographic example data needs PyOPIA 2.18.0 or newer")
+    assert not user.find(kind=ui.button, content="Create here").elements.pop().enabled
+
+
 async def test_create_lets_user_choose_pyopia_version(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

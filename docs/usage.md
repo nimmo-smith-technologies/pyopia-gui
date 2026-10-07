@@ -12,7 +12,8 @@ tabs - each one only usable once it's actually relevant:
    pyopia-gui will create an example project in, and/or process; it starts out
    pointing at a ready-made example location. Click **Browse…** to pick a different
    folder, or type a path directly. **Create example project** downloads a small
-   set of example images and a matching configuration file into it.
+   set of example images and a matching configuration file into it - for either a
+   SilCam or a holographic (holo) instrument, your choice.
 2. **Raw data explorer** - becomes available once the Project folder field points at
    a valid PyOPIA project. Browse a paginated grid of thumbnails of that project's raw
    images - see [Browsing raw data](#browsing-raw-data) below.
@@ -52,9 +53,11 @@ element on the page shows a short explanation too.
 
 The quickest way to see pyopia-gui working:
 
-1. Click **Create example project**. This downloads some example data - it can
-   take a little while the first time, since it also needs to download PyOPIA's
-   Docker image if you don't already have it.
+1. Click **Create example project**, pick an instrument (SilCam or holo), and
+   confirm. This downloads some example data - it can take a little while the first
+   time, since it also needs to download PyOPIA's Docker image if you don't already
+   have it. (Holo example data needs PyOPIA 2.18.0 or newer, so choosing holo only
+   offers those versions.)
 2. Switch to the **Process** tab (now enabled) and click **Run processing**.
 3. Once processing finishes, pyopia-gui switches to the **Results** tab automatically.
    It shows the exact PyOPIA version that produced the results - read from the

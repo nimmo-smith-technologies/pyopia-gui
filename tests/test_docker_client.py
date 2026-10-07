@@ -37,6 +37,26 @@ def test_init_project_command_mounts_parent_dir_and_passes_example_flag(tmp_path
     assert command[-3:] == ["init-project", "demo", "--example-data"]
 
 
+def test_init_project_command_passes_a_non_default_instrument(tmp_path: Path) -> None:
+    command = docker_client.init_project_command(tmp_path, "demo", instrument="holo")
+
+    assert command[-5:] == ["init-project", "demo", "--example-data", "--instrument", "holo"]
+
+
+def test_image_version_reads_the_tag_and_ignores_floating_tags() -> None:
+    assert docker_client.image_version("ghcr.io/sintef/pyopia:v2.17.0") == "2.17.0"
+    assert docker_client.image_version("ghcr.io/sintef/pyopia:V2.18.0") == "2.18.0"
+    assert docker_client.image_version("ghcr.io/sintef/pyopia:latest") is None
+    assert docker_client.image_version("ghcr.io/sintef/pyopia") is None
+
+
+def test_supports_recent_cli_only_rejects_known_older_versions() -> None:
+    assert docker_client.supports_recent_cli("2.18.0")
+    assert docker_client.supports_recent_cli("2.19.1")
+    assert not docker_client.supports_recent_cli("2.17.0")
+    assert docker_client.supports_recent_cli(None)
+
+
 def test_process_command_mounts_project_dir_and_passes_config(tmp_path: Path) -> None:
     command = docker_client.process_command(tmp_path, "config.toml")
 
