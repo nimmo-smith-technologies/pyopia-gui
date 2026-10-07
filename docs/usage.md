@@ -42,6 +42,12 @@ tabs - each one only usable once it's actually relevant:
    processed stats file). If you point pyopia-gui at an already-processed project,
    it jumps here automatically and shows whatever's already there - see
    [Reviewing results](#reviewing-results) below.
+Only one run can use a project folder at a time: while a run is going, pyopia-gui keeps a
+small `.pyopia_gui_running` marker in the folder, and starting another run - from a second
+window, or another copy of the app - asks first, since two runs writing to the same folder
+would mix their results. If the app was closed or crashed mid-run, the marker is replaced
+automatically once it's gone stale; if you're sure nothing is running, **Clear and run
+anyway** removes it.
 
 Below the tabs, a **status line** shows what's currently happening, and a **log
 panel** shows PyOPIA's own output in detail - useful if something goes wrong and you

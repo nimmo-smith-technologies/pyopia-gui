@@ -126,6 +126,13 @@ native app and actually run it:
       a PyOPIA version; on one with existing results, shows the pinned
       version (with a newer-version note if applicable) before running.
 - [ ] Real run streams log output live and finishes with a status/notify.
+- [ ] While a run is going (`.pyopia_gui_running` is in the project folder), clicking
+      **Run processing** from a second browser window - or a second copy of the app - on the
+      same project shows "This project is already being processed" with **Cancel** and
+      **Clear and run anyway**. Cancel leaves the first run alone; the marker is gone once
+      the first run finishes, and a new run then starts normally.
+- [ ] Kill the app mid-run (and `docker stop` its container): about 30 seconds later a new
+      run starts without asking. With the container still running, it still asks.
 - [ ] On a project pinned to PyOPIA 2.18.0+, a progress bar fills and the status
       line reads "Processing image N of M (X%)", with "about … remaining" after
       the first few images; with **Processors to use** above 1 it still counts

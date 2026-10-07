@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import time
 import tomllib
@@ -17,7 +18,7 @@ import tomli_w
 from nicegui import background_tasks, ui
 from nicegui import run as nicegui_run
 
-from pyopia_gui import __version__, docker_client, vendored_stats, version_check
+from pyopia_gui import __version__, docker_client, run_lock, vendored_stats, version_check
 
 # Overridable via env var, same pattern as docker_client.PYOPIA_IMAGE - not a
 # user-facing feature, but the only way to override this at all: NiceGUI's test
@@ -436,6 +437,28 @@ async def _confirm_version_substitution(pinned: str, suggested: str) -> bool:
             ui.button(f"Continue with v{suggested}", on_click=lambda: dialog.submit(True)).mark(
                 "confirm-version-substitution"
             )
+    return bool(await dialog)
+
+
+async def _confirm_clear_run_lock(holder: dict) -> bool:
+    """Say another processing run seems to be using this project, and ask whether to run anyway.
+
+    Returns True to clear its marker and carry on, False to leave things alone.
+    """
+    with ui.dialog() as dialog, ui.card().classes("max-w-lg"):
+        ui.label("This project is already being processed").classes("text-lg font-medium")
+        ui.label(
+            f"Another run ({run_lock.describe(holder)}) is using this folder - possibly in another "
+            "window or another copy of the app. Two runs in one folder mix their results, so wait "
+            "for it to finish."
+        ).classes("text-sm text-gray-500")
+        ui.label(
+            "If nothing is actually running (for example the app was closed or crashed mid-run), "
+            "you can clear the marker and run anyway."
+        ).classes("text-sm text-gray-500")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False))
+            ui.button("Clear and run anyway", on_click=lambda: dialog.submit(True)).mark("clear-run-lock")
     return bool(await dialog)
 
 
@@ -1861,6 +1884,31 @@ def index() -> None:
             ui.notify(error, type="negative")
             return
 
+        token = secrets.token_hex(8)
+        container_name = docker_client.new_container_name()
+        holder = await nicegui_run.io_bound(run_lock.acquire, project_dir, token, container_name)
+        if holder is not None:
+            if not await _confirm_clear_run_lock(holder):
+                return
+            await nicegui_run.io_bound(run_lock.clear, project_dir)
+            holder = await nicegui_run.io_bound(run_lock.acquire, project_dir, token, container_name)
+            if holder is not None:
+                ui.notify("Couldn't take over this project - another run just started.", type="negative")
+                return
+
+        async def keep_lock_fresh() -> None:
+            while True:
+                await asyncio.sleep(run_lock.HEARTBEAT_SECONDS)
+                await nicegui_run.io_bound(run_lock.touch, project_dir, token)
+
+        heartbeat = background_tasks.create(keep_lock_fresh(), name="run-lock-heartbeat")
+        try:
+            await run_processing(project_dir, container_name)
+        finally:
+            heartbeat.cancel()
+            await nicegui_run.io_bound(run_lock.release, project_dir, token)
+
+    async def run_processing(project_dir: Path, container_name: str) -> None:
         run_button.disable()
         set_status("Checking PyOPIA version…", busy=True)
         image = await resolve_run_image(project_dir)
@@ -1946,7 +1994,12 @@ def index() -> None:
         try:
             exit_code, lines = await run_streamed_to_log(
                 docker_client.process_command(
-                    project_dir, image=image, num_chunks=num_chunks, strategy=strategy, progress_file=progress_file
+                    project_dir,
+                    image=image,
+                    num_chunks=num_chunks,
+                    strategy=strategy,
+                    progress_file=progress_file,
+                    container_name=container_name,
                 )
             )
         finally:

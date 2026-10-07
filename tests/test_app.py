@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -14,7 +15,7 @@ from nicegui import ui
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
 
-from pyopia_gui import __version__, docker_client, vendored_stats, version_check
+from pyopia_gui import __version__, docker_client, run_lock, vendored_stats, version_check
 
 
 async def _click_through_pinned_version_dialog_if_shown(user: User) -> None:
@@ -37,6 +38,21 @@ async def _click_through_pinned_version_dialog_if_shown(user: User) -> None:
     if buttons:
         UserInteraction(user, buttons, target=None).click()
         await asyncio.sleep(0.2)
+
+
+async def _click_in_open_dialog(user: User, label: str) -> None:
+    """Click the button labelled `label` in whichever dialog is currently open (closed dialogs
+    stay in the DOM, so a plain content lookup could pick a stale button)."""
+    await asyncio.sleep(0.2)
+    open_dialogs = [dialog for dialog in user.find(ui.dialog).elements if dialog.value]
+    buttons = {
+        button
+        for button in user.find(kind=ui.button, content=label).elements
+        if any(button in dialog.descendants() for dialog in open_dialogs)
+    }
+    assert buttons, f"no open dialog has a {label!r} button"
+    UserInteraction(user, buttons, target=None).click()
+    await asyncio.sleep(0.2)
 
 
 @pytest.fixture(autouse=True)
@@ -841,6 +857,99 @@ async def test_successful_rerun_removes_stale_montage(
     assert not (tmp_path / "montage-scaled.json").exists()
     await user.should_see("Generate montage")
     await user.should_not_see("Regenerate montage")
+
+
+async def _start_run_that_waits(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[asyncio.Event, list[list[str]]]:
+    """Set up a project and fake Docker where `process` blocks until the returned event is set."""
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    monkeypatch.setattr(docker_client, "container_is_running", lambda name: False)
+    _write_config_with_pixel_size(tmp_path)
+    release_run = asyncio.Event()
+    commands: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        commands.append(command)
+        if "process" in command:
+            await release_run.wait()
+        else:
+            (tmp_path / "processed").mkdir(exist_ok=True)
+            (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+    return release_run, commands
+
+
+async def test_a_second_window_cannot_start_a_run_on_a_project_already_being_processed(
+    user: User, create_user: Callable[[], User], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    release_run, commands = await _start_run_that_waits(user, monkeypatch, tmp_path)
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await asyncio.sleep(0.3)
+    assert sum("process" in c for c in commands) == 1
+    assert (tmp_path / run_lock.LOCK_FILENAME).is_file()
+    assert "--name" in next(c for c in commands if "process" in c)
+
+    other_window = create_user()
+    await other_window.open("/")
+    other_window.find(ui.input).elements.pop().value = str(tmp_path)
+    other_window.find(kind=ui.button, content="Run processing").click()
+    await other_window.should_see("This project is already being processed")
+    await _click_in_open_dialog(other_window, "Cancel")
+    assert sum("process" in c for c in commands) == 1
+
+    release_run.set()
+    await user.should_see("Done")
+    assert not (tmp_path / run_lock.LOCK_FILENAME).exists()
+
+
+async def test_clearing_a_marker_left_by_another_run_lets_this_one_start(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    release_run, commands = await _start_run_that_waits(user, monkeypatch, tmp_path)
+    run_lock.acquire(tmp_path, "another-app-instance", "pyopia-gui-other")
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    user.find(kind=ui.button, content="Run processing").click()
+    await user.should_see("This project is already being processed")
+    assert not commands
+
+    user.find(marker="clear-run-lock").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await asyncio.sleep(0.3)
+    assert sum("process" in c for c in commands) == 1
+
+    release_run.set()
+    await user.should_see("Done")
+    assert not (tmp_path / run_lock.LOCK_FILENAME).exists()
+
+
+async def test_a_marker_left_by_a_run_that_died_is_replaced_without_asking(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    release_run, commands = await _start_run_that_waits(user, monkeypatch, tmp_path)
+    run_lock.acquire(tmp_path, "an-app-that-was-killed", "pyopia-gui-dead")
+    old = (tmp_path / run_lock.LOCK_FILENAME).stat().st_mtime - run_lock.STALE_AFTER_SECONDS - 5
+    os.utime(tmp_path / run_lock.LOCK_FILENAME, (old, old))
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await asyncio.sleep(0.3)
+
+    assert sum("process" in c for c in commands) == 1
+    release_run.set()
+    await user.should_see("Done")
 
 
 async def test_run_processing_clears_stale_output_folder_before_running(

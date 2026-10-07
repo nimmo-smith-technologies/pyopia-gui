@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import re
+import secrets
 import subprocess
 import tomllib
 import urllib.request
@@ -285,6 +286,26 @@ def generate_config_command(
 PROGRESS_FILENAME = ".pyopia_gui_progress.json"
 
 
+def new_container_name() -> str:
+    """A unique name for a container pyopia-gui starts, so it can be found (and stopped) later."""
+    return f"pyopia-gui-{secrets.token_hex(4)}"
+
+
+def container_is_running(name: str) -> bool:
+    """Whether a Docker container called exactly `name` is running right now."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--quiet", "--filter", f"name=^{name}$"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            **_no_console_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
 def process_command(
     project_dir: Path,
     config_filename: str = "config.toml",
@@ -292,6 +313,7 @@ def process_command(
     num_chunks: int = 1,
     strategy: str = "block",
     progress_file: str | None = None,
+    container_name: str | None = None,
 ) -> list[str]:
     """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`.
 
@@ -304,11 +326,15 @@ def process_command(
     `progress_file` maps to `process --progress-file` (PyOPIA 2.18.0+, see
     `supports_recent_cli`): a path, relative to `project_dir`, PyOPIA keeps updated with how
     many images it has processed - read back via `read_progress`.
+
+    `container_name` names the container (`docker run --name`) so a run can be recognised as
+    still going, and stopped, from outside.
     """
     command = [
         "docker",
         "run",
         "--rm",
+        *(["--name", container_name] if container_name else []),
         *_user_args(),
         *_volume_args(project_dir),
         image,
