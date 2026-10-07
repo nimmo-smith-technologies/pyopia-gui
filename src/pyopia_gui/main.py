@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import asyncio
 import json
 import math
 import os
 import re
 import shutil
+import time
 import tomllib
 import webbrowser
 from collections.abc import Awaitable, Callable
@@ -563,6 +565,8 @@ def index() -> None:
         spinner.visible = False
         status_label = ui.label("Ready").classes("text-md font-medium")
         status_label.tooltip("The current step in the create/process workflow above")
+    process_progress_bar = ui.linear_progress(value=0, show_value=False)
+    process_progress_bar.visible = False
 
     ui.add_css("""
         .pyopia-log .q-scrollarea__bar {
@@ -1885,9 +1889,53 @@ def index() -> None:
         with results_container:
             ui.label("Processing is running…").classes("text-sm text-gray-500")
         set_status("Running processing (this can take a few minutes)…", busy=True)
-        exit_code, lines = await run_streamed_to_log(
-            docker_client.process_command(project_dir, image=image, num_chunks=num_chunks, strategy=strategy)
+
+        # `process --progress-file` only exists in newer PyOPIA versions - an older pinned
+        # project just keeps the plain spinner.
+        progress_file = (
+            docker_client.PROGRESS_FILENAME
+            if docker_client.supports_recent_cli(docker_client.image_version(image))
+            else None
         )
+
+        try:
+            config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+        except (OSError, tomllib.TOMLDecodeError):
+            config = {}
+        images_before_timing = docker_client.warmup_images(config, num_chunks)
+
+        async def show_progress() -> None:
+            timing_start: tuple[int, float] | None = None  # (images done, time) once warmed up
+            while True:
+                progress = await nicegui_run.io_bound(docker_client.read_progress, project_dir, num_chunks)
+                if progress and progress[1]:
+                    processed, total = progress
+                    if timing_start is None and processed >= images_before_timing:
+                        timing_start = (processed, time.monotonic())
+                    already_done, started = timing_start or (processed, time.monotonic())
+                    process_progress_bar.set_value(processed / total)
+                    process_progress_bar.visible = True
+                    set_status(
+                        docker_client.progress_text(processed, total, time.monotonic() - started, already_done),
+                        busy=True,
+                    )
+                await asyncio.sleep(1)
+
+        progress_task = None
+        if progress_file:
+            await nicegui_run.io_bound(docker_client.clear_progress_files, project_dir, num_chunks)
+            progress_task = background_tasks.create(show_progress(), name="process-progress")
+        try:
+            exit_code, lines = await run_streamed_to_log(
+                docker_client.process_command(
+                    project_dir, image=image, num_chunks=num_chunks, strategy=strategy, progress_file=progress_file
+                )
+            )
+        finally:
+            if progress_task:
+                progress_task.cancel()
+                process_progress_bar.visible = False
+                await nicegui_run.io_bound(docker_client.clear_progress_files, project_dir, num_chunks)
         if exit_code != 0:
             report_failure(lines, "Processing failed", image)
             run_button.enable()

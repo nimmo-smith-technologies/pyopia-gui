@@ -126,6 +126,13 @@ native app and actually run it:
       a PyOPIA version; on one with existing results, shows the pinned
       version (with a newer-version note if applicable) before running.
 - [ ] Real run streams log output live and finishes with a status/notify.
+- [ ] On a project pinned to PyOPIA 2.18.0+, a progress bar fills and the status
+      line reads "Processing image N of M (X%)", with "about … remaining" after
+      the first few images; with **Processors to use** above 1 it still counts
+      the whole dataset (all chunks together). The bar disappears when the run
+      ends and no `.pyopia_gui_progress.json*` file is left in the project
+      folder. On a 2.17.0-pinned project the plain spinner is shown instead and
+      the run still works.
 - [ ] A rerun clears stale Results content before the new run's own output
       appears.
 - [ ] A persistent warning is visible on this tab explaining that the

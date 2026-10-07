@@ -43,6 +43,78 @@ def test_init_project_command_passes_a_non_default_instrument(tmp_path: Path) ->
     assert command[-5:] == ["init-project", "demo", "--example-data", "--instrument", "holo"]
 
 
+def test_process_command_adds_the_progress_file_only_when_asked(tmp_path: Path) -> None:
+    assert "--progress-file" not in docker_client.process_command(tmp_path)
+
+    command = docker_client.process_command(tmp_path, progress_file=".progress.json")
+
+    assert command[-2:] == ["--progress-file", ".progress.json"]
+
+
+def test_read_progress_reads_a_single_file(tmp_path: Path) -> None:
+    (tmp_path / docker_client.PROGRESS_FILENAME).write_text('{"processed": 3, "total": 10}')
+
+    assert docker_client.read_progress(tmp_path) == (3, 10)
+
+
+def test_read_progress_is_none_before_any_file_exists_or_if_it_is_unreadable(tmp_path: Path) -> None:
+    assert docker_client.read_progress(tmp_path) is None
+
+    (tmp_path / docker_client.PROGRESS_FILENAME).write_text('{"processed": 3')  # caught mid-write
+
+    assert docker_client.read_progress(tmp_path) is None
+
+
+def test_read_progress_sums_chunks_and_waits_for_all_of_them(tmp_path: Path) -> None:
+    (tmp_path / f"{docker_client.PROGRESS_FILENAME}.chunk0").write_text('{"processed": 2, "total": 5}')
+
+    assert docker_client.read_progress(tmp_path, num_chunks=2) is None
+
+    (tmp_path / f"{docker_client.PROGRESS_FILENAME}.chunk1").write_text('{"processed": 1, "total": 5}')
+
+    assert docker_client.read_progress(tmp_path, num_chunks=2) == (3, 10)
+
+
+def test_clear_progress_files_removes_the_files_and_their_tmp_copies(tmp_path: Path) -> None:
+    for name in (f"{docker_client.PROGRESS_FILENAME}.chunk0", f"{docker_client.PROGRESS_FILENAME}.chunk0.tmp"):
+        (tmp_path / name).write_text("{}")
+
+    docker_client.clear_progress_files(tmp_path, num_chunks=2)  # also fine when chunk1's files don't exist
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_progress_text_shows_a_remaining_time_estimate_only_after_a_few_images() -> None:
+    assert docker_client.progress_text(1, 50, 40) == "Processing image 1 of 50 (2%)"
+    assert docker_client.progress_text(10, 50, 100) == "Processing image 10 of 50 (20%) - about 7 min remaining"
+    assert docker_client.progress_text(40, 50, 40) == "Processing image 40 of 50 (80%) - about 10 sec remaining"
+    assert docker_client.progress_text(50, 50, 500) == "Processing image 50 of 50 (100%)"
+    assert docker_client.progress_text(4, 400, 400) == "Processing image 4 of 400 (1%) - about 11 h 0 min remaining"
+
+
+def test_warmup_images_skips_the_background_building_images_and_the_first_one_analysed() -> None:
+    holo = {
+        "steps": {
+            "correctbackground": {"pipeline_class": "pyopia.background.CorrectBackgroundAccurate", "average_window": 10}
+        }
+    }
+
+    assert docker_client.warmup_images(holo) == 11
+    assert docker_client.warmup_images(holo, num_chunks=2) == 22
+    # No background step: only the first image's one-off costs.
+    assert docker_client.warmup_images({"steps": {}}) == 1
+    assert docker_client.warmup_images({}) == 1
+
+
+def test_progress_text_times_the_pace_from_when_timing_began() -> None:
+    # 9 images in the 90 s since the first report (which already had 1 done): 10 s/image, 40 left.
+    assert docker_client.progress_text(10, 50, 90, already_done=1) == (
+        "Processing image 10 of 50 (20%) - about 7 min remaining"
+    )
+    # Too few images timed since the first report to estimate from yet.
+    assert docker_client.progress_text(3, 50, 20, already_done=1) == "Processing image 3 of 50 (6%)"
+
+
 def test_make_montage_scaled_command_passes_output_filename_and_rel_scale(tmp_path: Path) -> None:
     command = docker_client.make_montage_scaled_command(tmp_path, "processed/demo-STATS.nc", rel_scale=0.4)
 

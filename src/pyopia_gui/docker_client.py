@@ -282,12 +282,16 @@ def generate_config_command(
     ]
 
 
+PROGRESS_FILENAME = ".pyopia_gui_progress.json"
+
+
 def process_command(
     project_dir: Path,
     config_filename: str = "config.toml",
     image: str = PYOPIA_IMAGE,
     num_chunks: int = 1,
     strategy: str = "block",
+    progress_file: str | None = None,
 ) -> list[str]:
     """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`.
 
@@ -296,6 +300,10 @@ def process_command(
     `multiprocessing` - unaffected by running inside Docker, since multiprocessing within
     one container works the same as on the host). Only appended when `num_chunks` asks for
     more than one chunk, so the default call is byte-for-byte what it always was.
+
+    `progress_file` maps to `process --progress-file` (PyOPIA 2.18.0+, see
+    `supports_recent_cli`): a path, relative to `project_dir`, PyOPIA keeps updated with how
+    many images it has processed - read back via `read_progress`.
     """
     command = [
         "docker",
@@ -309,7 +317,63 @@ def process_command(
     ]
     if num_chunks > 1:
         command += ["--num-chunks", str(num_chunks), "--strategy", strategy]
+    if progress_file is not None:
+        command += ["--progress-file", progress_file]
     return command
+
+
+def _progress_paths(project_dir: Path, num_chunks: int) -> list[Path]:
+    # With more than one chunk, PyOPIA writes one `<progress_file>.chunk<N>` per chunk
+    # instead of a single shared file.
+    if num_chunks <= 1:
+        return [project_dir / PROGRESS_FILENAME]
+    return [project_dir / f"{PROGRESS_FILENAME}.chunk{c}" for c in range(num_chunks)]
+
+
+def read_progress(project_dir: Path, num_chunks: int = 1) -> tuple[int, int] | None:
+    """(images processed, images in total) from PyOPIA's `--progress-file` output, summed
+    across chunks, or None until every chunk has reported at least once (or if a file can't
+    be read right now - it's rewritten after every image, so just try again shortly).
+    """
+    processed = total = 0
+    for path in _progress_paths(project_dir, num_chunks):
+        try:
+            data = json.loads(path.read_text())
+            processed += int(data["processed"])
+            total += int(data["total"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+    return processed, total
+
+
+def clear_progress_files(project_dir: Path, num_chunks: int = 1) -> None:
+    """Remove any progress file(s) (and PyOPIA's in-flight `.tmp` copy of each) left by a
+    previous run, so stale numbers are never mistaken for the current run's."""
+    for path in _progress_paths(project_dir, num_chunks):
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".tmp").unlink(missing_ok=True)
+
+
+def progress_text(processed: int, total: int, elapsed_seconds: float, already_done: int = 0) -> str:
+    """A status line like "Processing image 12 of 50 (24%) - about 3 min remaining".
+
+    The estimate extrapolates the pace of the images done since timing began: `already_done`
+    is how many were complete at that point and `elapsed_seconds` the time since (see
+    `warmup_images` for where to start). It's only shown once a few images have been timed.
+    """
+    text = f"Processing image {processed} of {total} ({round(100 * processed / total) if total else 0}%)"
+    timed = processed - already_done
+    if timed >= 3 and processed < total:
+        seconds = elapsed_seconds * (total - processed) / timed
+        minutes = round(seconds / 60)
+        if seconds < 60:
+            remaining = f"{int(seconds)} sec"
+        elif minutes < 60:
+            remaining = f"{minutes} min"
+        else:
+            remaining = f"{minutes // 60} h {minutes % 60} min"
+        text += f" - about {remaining} remaining"
+    return text
 
 
 def merge_mfdata_command(
@@ -1250,6 +1314,17 @@ def required_background_context(config: dict) -> int:
         if isinstance(step, dict) and str(step.get("pipeline_class", "")).startswith("pyopia.background."):
             return int(step.get("average_window", 1))
     return 0
+
+
+def warmup_images(config: dict, num_chunks: int = 1) -> int:
+    """How many images a run gets through before its pace is representative, for `config`.
+
+    The first `required_background_context` images only build the background (they finish
+    almost at once and yield no statistics), and the first image analysed after them carries
+    one-off costs (loading the models), so timing should start only after those. Each chunk
+    of a multi-processor run does this separately.
+    """
+    return (required_background_context(config) + 1) * max(num_chunks, 1)
 
 
 # See the comment above _RESOLVE_PIPELINE_CLASS_SRC for why these are exec()-ed from a

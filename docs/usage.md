@@ -31,7 +31,10 @@ tabs - each one only usable once it's actually relevant:
    on it - once finished, results are available on the Results tab (including
    generating a montage there, on demand - it isn't built automatically).
    **Starting a run clears the project's existing output folder first**, so old
-   results are never left behind to potentially get mixed into new ones. A
+   results are never left behind to potentially get mixed into new ones. While it
+   runs, a progress bar shows how many images have been processed so far, with an
+   estimate of the time remaining (needs PyOPIA 2.18.0 or newer - an older project
+   just shows a spinner and the log). A
    **Processors to use** setting lets you split the run across multiple chunks for
    a speedup on a multi-core machine (requires the project's `steps.output.append`
    setting to be `false`).

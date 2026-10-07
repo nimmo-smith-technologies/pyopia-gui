@@ -697,6 +697,75 @@ async def test_rerun_clears_stale_results_from_previous_run(
     await user.should_see("Done")
 
 
+async def test_run_processing_shows_real_progress_when_the_version_supports_it(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0"])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.18.0")
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\npixel_size = 24\n\n[steps.output]\noutput_datafile = "processed/demo"\nappend = true\n'
+    )
+    commands: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        commands.append(command)
+        if "process" in command:
+            # What PyOPIA's own `process --progress-file` keeps rewriting while it runs.
+            (tmp_path / docker_client.PROGRESS_FILENAME).write_text('{"processed": 2, "total": 5}')
+            await asyncio.sleep(2.5)
+            (tmp_path / "processed").mkdir(exist_ok=True)
+            (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("Processing image 2 of 5 (40%)", retries=40)
+
+    await user.should_see("Done", retries=60)  # the fake `process` call runs for a few seconds
+    process_command = next(c for c in commands if "process" in c)
+    assert process_command[process_command.index("--progress-file") + 1] == docker_client.PROGRESS_FILENAME
+    assert not (tmp_path / docker_client.PROGRESS_FILENAME).exists()
+
+
+async def test_run_processing_leaves_out_the_progress_file_for_an_older_pinned_version(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0", "2.17.0"])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.17.0")
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\npixel_size = 24\n\n[steps.output]\noutput_datafile = "processed/demo"\nappend = true\n'
+    )
+    commands: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        commands.append(command)
+        if "process" in command:
+            (tmp_path / "processed").mkdir(exist_ok=True)
+            (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("Done")
+
+    process_command = next(c for c in commands if "process" in c)
+    assert "--progress-file" not in process_command
+
+
 async def test_run_processing_skips_merge_mfdata_when_output_appends_directly(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
