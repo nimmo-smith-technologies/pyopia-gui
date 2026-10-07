@@ -191,6 +191,9 @@ native app and actually run it:
 - [ ] **Export to EcoTaxa…** produces a real zip (particle PNGs +
       `ecotaxa_particle_statistics.tsv`); **Save EcoTaxa export as…** copies
       it elsewhere.
+- [ ] On a project processed without a classifier (e.g. the holo example),
+      **Export to EcoTaxa…** says PyOPIA's EcoTaxa export doesn't work yet without
+      a classifier, rather than only showing a traceback.
 - [ ] On a project with `steps.output.auxillary_data_file` configured, a
       **Filter by** control appears with the declared aux column(s) (e.g.
       `depth`); on one without, it doesn't appear at all.

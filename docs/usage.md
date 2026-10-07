@@ -183,6 +183,11 @@ EcoTaxa…** bundles particle images and stats into a zip ready to import into
 land in the project folder first (Docker can only write inside its own mounted
 folder), then offer their own **Save as…** to copy elsewhere.
 
+PyOPIA's EcoTaxa export doesn't yet work on results processed without a classifier
+(such as the holo example) - pyopia-gui says so if you try it. That's a PyOPIA limitation
+([pyopia#443](https://github.com/SINTEF/pyopia/issues/443)): EcoTaxa itself doesn't need
+a classifier, since you classify the images there.
+
 **Generate scaled montage** builds a different kind of montage, where the packed
 area reflects how much data there is rather than always filling the same canvas -
 useful for comparing datasets or subsets of different sizes. **Relative scale**

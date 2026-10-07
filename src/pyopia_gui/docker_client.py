@@ -1174,6 +1174,9 @@ _IMAGE_PULL_FAILURE_MARKERS = (
 
 _DAEMON_UNREACHABLE_MARKERS = ("cannot connect to the docker daemon",)
 _STALL_MARKERS = ("no output received for",)
+# `export-to-ecotaxa` crashing in `create_bundle` with this numpy error means the stats have no
+# classifier (`probability_*`) columns, which PyOPIA's export looks for but EcoTaxa doesn't need.
+_ECOTAXA_NO_CLASSIFIER_MARKERS = ("create_bundle", "zero-size array to reduction operation minimum")
 
 
 def interpret_failure(output_lines: list[str], image: str = PYOPIA_IMAGE) -> str | None:
@@ -1200,6 +1203,8 @@ def interpret_failure(output_lines: list[str], image: str = PYOPIA_IMAGE) -> str
             "download, either of the Docker image or of the example data, is the most common "
             "cause, especially over VPN or on Windows/WSL2). Check your connection, then try again."
         )
+    if all(marker in combined for marker in _ECOTAXA_NO_CLASSIFIER_MARKERS):
+        return "PyOPIA's EcoTaxa export doesn't work yet on results processed without a classifier"
     return None
 
 

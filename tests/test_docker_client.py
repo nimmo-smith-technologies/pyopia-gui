@@ -727,6 +727,30 @@ def test_interpret_failure_recognises_daemon_unreachable() -> None:
     assert docker_client.interpret_failure(lines) is not None
 
 
+def test_interpret_failure_explains_ecotaxa_export_on_results_without_a_classifier() -> None:
+    # Excerpt of real `export-to-ecotaxa` output on holo stats (no probability_* columns).
+    lines = [
+        "CREATING ECOTAXA BUNDLE",
+        "╭───────────────────── Traceback (most recent call last) ──────────────────────╮",
+        "│ /usr/local/lib/python3.12/site-packages/pyopia/dataexport/ecotaxa.py:147 in  │",
+        "│ create_bundle                                                                │",
+        "│ /usr/local/lib/python3.12/site-packages/pyopia/statistics.py:1235 in         │",
+        "│ add_best_guesses_to_stats                                                    │",
+        "ValueError: zero-size array to reduction operation minimum which has no identity",
+    ]
+
+    message = docker_client.interpret_failure(lines)
+
+    assert message is not None
+    assert "without a classifier" in message
+
+
+def test_interpret_failure_leaves_the_same_numpy_error_elsewhere_unexplained() -> None:
+    lines = ["ValueError: zero-size array to reduction operation minimum which has no identity"]
+
+    assert docker_client.interpret_failure(lines) is None
+
+
 def test_interpret_failure_does_not_blame_a_successful_pull_for_a_later_stall() -> None:
     # Real case: Docker always prints "Unable to find image ... locally" on any
     # first-time run, pull or no pull failure - it's not itself a failure signal.
