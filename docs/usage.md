@@ -175,8 +175,8 @@ The **Results** tab shows whatever's currently on disk for a processed project -
 opening pyopia-gui on an already-processed project jumps here automatically.
 
 **Generate montage** builds an image of the detected particles (not built
-automatically, since it's a separate step); **Save montage as…** copies it to a
-location of your choice. **Export size distribution as CSV…** saves the
+automatically, since it's a separate step) - click it to see it at its full size;
+**Save montage as…** copies it to a location of your choice. **Export size distribution as CSV…** saves the
 diameter/particle-count bins behind the chart further down. **Export to
 EcoTaxa…** bundles particle images and stats into a zip ready to import into
 [EcoTaxa](https://ecotaxa.obs-vlfr.fr/). Both the montage and the EcoTaxa export

@@ -183,6 +183,8 @@ native app and actually run it:
       amber note under the scaled montage saying how many particles didn't fit,
       and it is still there after reloading the page, with the **Relative scale**
       box still showing the value used; a larger scale that fits everything removes it.
+- [ ] Clicking a montage (plain or scaled) opens it at full pixel size in a
+      scrollable view; **Close** (or Esc) dismisses it.
 - [ ] **Save montage as…** opens a folder-browsing dialog (starting at the
       project folder), navigating into a subfolder works, and **Save here**
       actually copies the file there.

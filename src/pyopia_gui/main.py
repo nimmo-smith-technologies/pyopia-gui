@@ -85,6 +85,23 @@ def _text_from_toml_value(value: object) -> str:
     return tomli_w.dumps({"_": value}).removeprefix("_ = ").strip()
 
 
+def _enlargeable_image(path: Path) -> None:
+    """Show the image at `path` at page width; clicking it opens it at its full pixel size."""
+    small = ui.image(str(path)).classes("w-full max-w-2xl cursor-zoom-in")
+    # force_reload: a regenerated file keeps the same URL, and the browser would otherwise
+    # keep showing its cached copy of the previous one.
+    small.force_reload()
+    # The same URL the page itself requests for the small image (NiceGUI's reload marker is
+    # `_nicegui_t`; the file is only served under it).
+    full_src = f"{small.props['src']}?_nicegui_t={small.props['t']}"
+    with ui.dialog().props("maximized") as dialog, ui.card().classes("w-full h-full"):
+        with ui.scroll_area().classes("w-full grow"):
+            ui.element("img").props(f'src="{full_src}" alt="{path.name}"').style("max-width: none")
+        ui.button("Close", on_click=dialog.close)
+    small.tooltip("Click to see it at full size")
+    small.on("click", dialog.open)
+
+
 def _filtered_save_name(filename: str, active_filter: tuple[str, float, float] | None) -> str:
     """The suggested filename for saving `filename` made with the aux-data `active_filter`
     (column, low, high) applied - e.g. `montage.png` filtered to depth 5-10 becomes
@@ -764,9 +781,7 @@ def index() -> None:
                 await save_copy_as(montage_path, "montage", _filtered_save_name("montage.png", active_filter))
 
             if montage_path.is_file():
-                # force_reload: the file keeps the same URL when regenerated, and the browser
-                # would otherwise keep showing its cached copy of the previous one.
-                ui.image(str(montage_path)).classes("w-full max-w-2xl").force_reload()
+                _enlargeable_image(montage_path)
                 ui.label(str(montage_path)).classes("font-mono text-xs text-gray-500 break-all")
                 with ui.row().classes("items-center gap-2"):
                     ui.button("Regenerate montage", on_click=generate_montage).tooltip(
@@ -824,7 +839,7 @@ def index() -> None:
                 )
             else:
                 if scaled_montage_path.is_file():
-                    ui.image(str(scaled_montage_path)).classes("w-full max-w-2xl").force_reload()
+                    _enlargeable_image(scaled_montage_path)
                     ui.label(str(scaled_montage_path)).classes("font-mono text-xs text-gray-500 break-all")
                     if scaled_info.get("skipped") and scaled_info.get("total"):
                         ui.label(

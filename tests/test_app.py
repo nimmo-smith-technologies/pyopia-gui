@@ -888,6 +888,31 @@ async def test_results_tab_montage_images_are_reloaded_not_served_from_the_brows
     assert all("t" in image.props for image in images)
 
 
+async def test_results_tab_montage_opens_at_full_size_when_clicked(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    (tmp_path / "montage.png").write_bytes(b"an existing montage")
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await user.should_see("Regenerate montage")
+    dialog = next(d for d in user.find(kind=ui.dialog).elements if d.props.get("maximized"))
+    assert not dialog.value
+
+    user.find(kind=ui.image).click()
+
+    assert dialog.value
+    # NiceGUI only serves the file under its own reload marker, so the full-size copy must use it.
+    full_size = next(e for e in user.find(kind=ui.element).elements if e.tag == "img")
+    small_src = user.find(kind=ui.image).elements.pop().props["src"]
+    assert full_size.props["src"].startswith(f"{small_src}?_nicegui_t=")
+
+
 async def test_results_tab_save_montage_as_copies_to_a_chosen_location(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
