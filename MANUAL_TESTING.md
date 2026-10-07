@@ -173,6 +173,16 @@ native app and actually run it:
       could be misread as "only X of Y were processed".
 - [ ] **Generate montage** / **Regenerate montage** produce a real montage
       image.
+- [ ] **Generate scaled montage** (project processed with PyOPIA 2.18.0+)
+      produces a real circular-packed montage image; a smaller **Relative
+      scale** gives a visibly smaller packed area, and a value outside 0-1 is
+      refused with a message. On a project processed with an older version it
+      shows an explanatory note instead of a button, and with an aux-data filter
+      active it says it can't be filtered yet.
+- [ ] A very small **Relative scale** (e.g. 0.003 on the example data) shows an
+      amber note under the scaled montage saying how many particles didn't fit,
+      and it is still there after reloading the page, with the **Relative scale**
+      box still showing the value used; a larger scale that fits everything removes it.
 - [ ] **Save montage as…** opens a folder-browsing dialog (starting at the
       project folder), navigating into a subfolder works, and **Save here**
       actually copies the file there.

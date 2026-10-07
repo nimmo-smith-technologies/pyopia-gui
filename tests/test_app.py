@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import json
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -747,6 +748,8 @@ async def test_successful_rerun_removes_stale_montage(
     monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
     _write_config_with_pixel_size(tmp_path)
     (tmp_path / "montage.png").write_bytes(b"stale montage from an earlier run")
+    (tmp_path / "montage-scaled.png").write_bytes(b"stale scaled montage from an earlier run")
+    (tmp_path / "montage-scaled.json").write_text('{"skipped": 4, "total": 20}')
 
     async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
         if "merge-mfdata" in command:
@@ -765,6 +768,8 @@ async def test_successful_rerun_removes_stale_montage(
     await user.should_see("Done")
 
     assert not (tmp_path / "montage.png").exists()
+    assert not (tmp_path / "montage-scaled.png").exists()
+    assert not (tmp_path / "montage-scaled.json").exists()
     await user.should_see("Generate montage")
     await user.should_not_see("Regenerate montage")
 
@@ -861,6 +866,28 @@ async def test_results_tab_offers_regenerate_when_a_montage_already_exists(
     assert "Generate montage" not in button_labels
 
 
+async def test_results_tab_montage_images_are_reloaded_not_served_from_the_browser_cache(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A regenerated montage keeps its filename, so its URL doesn't change - without a reload
+    # marker the browser keeps showing its cached copy of the previous one.
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    (tmp_path / "montage.png").write_bytes(b"an existing montage")
+    (tmp_path / "montage-scaled.png").write_bytes(b"an existing scaled montage")
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+
+    await user.should_see("Regenerate scaled montage")
+    images = user.find(kind=ui.image).elements
+    assert len(images) == 2
+    assert all("t" in image.props for image in images)
+
+
 async def test_results_tab_save_montage_as_copies_to_a_chosen_location(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -891,6 +918,173 @@ async def test_results_tab_save_montage_as_copies_to_a_chosen_location(
     await asyncio.sleep(0.2)
 
     assert (exports_dir / "montage.png").read_bytes() == b"an existing montage"
+
+
+async def test_results_tab_saves_a_scaled_montage_under_a_name_containing_its_scale(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.18.0")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0"])
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    (tmp_path / "montage-scaled.png").write_bytes(b"a scaled montage")
+    (tmp_path / "montage-scaled.json").write_text('{"rel_scale": 0.4}')
+    exports_dir = tmp_path / "exports"
+    exports_dir.mkdir()
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await user.should_see("Save scaled montage as…")
+
+    user.find(kind=ui.button, content="Save scaled montage as…").click()
+    await asyncio.sleep(0.2)
+    exports_label = user.find(kind=ui.item_label, content="📁 exports").elements.pop()
+    UserInteraction(user, {exports_label.parent_slot.parent}, target=None).click()
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.button, content="Save here").click()
+    await asyncio.sleep(0.2)
+
+    assert (exports_dir / "montage-scaled-rel0p4.png").read_bytes() == b"a scaled montage"
+
+
+async def test_results_tab_generates_a_scaled_montage_with_the_chosen_relative_scale(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.18.0")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0"])
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("Generate scaled montage")
+
+    user.find(kind=ui.number, content="Relative scale (0-1)").elements.pop().set_value(0.4)
+    user.find(kind=ui.button, content="Generate scaled montage").click()
+    await asyncio.sleep(0.2)
+
+    command = next(c for c in calls if "make-montage-scaled" in c)
+    assert command[command.index("--rel-scale") + 1] == "0.4"
+    assert command[command.index("--output-filename") + 1] == "montage-scaled.png"
+
+
+async def test_results_tab_warns_when_scaled_montage_particles_were_skipped_and_remembers_it(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.18.0")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0"])
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    warn = True
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        if "make-montage-scaled" in command:
+            (tmp_path / "montage-scaled.png").write_bytes(b"a montage")
+            if warn:
+                on_line("33 of 53 particles could not be placed and were skipped - consider increasing msize")
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await user.should_see("Generate scaled montage")
+    user.find(kind=ui.button, content="Generate scaled montage").click()
+
+    await user.should_see("33 of 53 particles didn't fit and aren't shown in this montage")
+    assert json.loads((tmp_path / "montage-scaled.json").read_text()) == {
+        "rel_scale": 1.0,
+        "skipped": 33,
+        "total": 53,
+    }
+
+    # A clean regeneration clears the warning, and remembers the scale it used.
+    warn = False
+    user.find(kind=ui.number, content="Relative scale (0-1)").elements.pop().set_value(0.4)
+    user.find(kind=ui.button, content="Regenerate scaled montage").click()
+    await user.should_not_see("didn't fit and aren't shown")
+    assert json.loads((tmp_path / "montage-scaled.json").read_text()) == {"rel_scale": 0.4}
+
+
+async def test_results_tab_shows_the_remembered_scale_and_skipped_particles_warning_on_reopening(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.18.0")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0"])
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    (tmp_path / "montage-scaled.png").write_bytes(b"a montage")
+    (tmp_path / "montage-scaled.json").write_text('{"rel_scale": 0.35, "skipped": 4, "total": 20}')
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+
+    await user.should_see("4 of 20 particles didn't fit and aren't shown in this montage")
+    assert user.find(kind=ui.number, content="Relative scale (0-1)").elements.pop().value == 0.35
+
+
+async def test_results_tab_refuses_an_out_of_range_relative_scale(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.18.0")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: ["2.18.0"])
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("Generate scaled montage")
+
+    user.find(kind=ui.number, content="Relative scale (0-1)").elements.pop().set_value(1.5)
+    user.find(kind=ui.button, content="Generate scaled montage").click()
+    await asyncio.sleep(0.2)
+
+    await user.should_see("Relative scale must be greater than 0 and at most 1")
+    assert not any("make-montage-scaled" in c for c in calls)
+
+
+async def test_results_tab_explains_a_scaled_montage_needs_a_recent_pyopia(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.17.0")
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("A scaled montage needs PyOPIA 2.18.0 or newer")
+    button_labels = {button.text for button in user.find(kind=ui.button).elements}
+    assert "Generate scaled montage" not in button_labels
 
 
 async def test_results_tab_export_size_distribution_writes_a_csv(
@@ -957,6 +1151,7 @@ async def test_results_tab_aux_filter_narrows_particle_count_and_clears(
 
     await user.should_see("2 particles found")
     await user.should_see("Filtered to particles with depth between 5.0 and 9.0")
+    await user.should_see("A scaled montage can't be filtered by aux data yet")
 
     user.find(kind=ui.button, content="Clear filter").click()
     await asyncio.sleep(0.2)
@@ -2374,3 +2569,20 @@ async def test_depth_slider_does_not_appear_for_a_non_holo_result(
     await user.should_see("2 particle(s) found")
 
     await user.should_not_see(kind=ui.slider)
+
+
+@pytest.mark.parametrize(
+    ("rel_scale", "expected"),
+    [
+        (0.4, "montage-scaled-rel0p4.png"),
+        (1.0, "montage-scaled-rel1.png"),
+        (0.35, "montage-scaled-rel0p35.png"),
+        (0.003, "montage-scaled-rel0p003.png"),
+        (None, "montage-scaled.png"),
+        ("not a number", "montage-scaled.png"),
+    ],
+)
+def test_scaled_montage_save_name_has_no_extra_dots(rel_scale: object, expected: str) -> None:
+    from pyopia_gui.main import _scaled_montage_save_name
+
+    assert _scaled_montage_save_name(rel_scale) == expected

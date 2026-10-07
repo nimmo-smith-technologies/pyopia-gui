@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
+import json
 import math
 import os
 import shutil
@@ -26,6 +27,11 @@ from pyopia_gui import __version__, docker_client, vendored_stats, version_check
 DEFAULT_PROJECT_DIR = Path(
     os.environ.get("PYOPIA_GUI_DEFAULT_PROJECT_DIR", str(Path.home() / "pyopia-gui-projects" / "demo"))
 )
+SCALED_MONTAGE_FILENAME = "montage-scaled.png"
+# Beside the scaled montage: the Relative scale it was made with, and how many particles
+# it couldn't fit (which PyOPIA reports only while generating it) - kept so both are still
+# shown when the project is reopened.
+SCALED_MONTAGE_INFO_FILENAME = "montage-scaled.json"
 REPO_URL = "https://github.com/nimmo-smith-technologies/pyopia-gui"
 LICENSE_URL = f"{REPO_URL}/blob/main/LICENSE"
 THIRD_PARTY_LICENSES_URL = f"{REPO_URL}/blob/main/THIRD_PARTY_LICENSES.md"
@@ -76,6 +82,26 @@ def _toml_value_from_text(text: str) -> object:
 def _text_from_toml_value(value: object) -> str:
     """The inverse of `_toml_value_from_text` - how a non-scalar value is shown for editing."""
     return tomli_w.dumps({"_": value}).removeprefix("_ = ").strip()
+
+
+def _scaled_montage_save_name(rel_scale: object) -> str:
+    """The suggested filename for saving a scaled montage made at `rel_scale`, e.g.
+    `montage-scaled-rel0p4.png` - the decimal point becomes a "p" so the only dot is the
+    extension's, which every file system and tool copes with."""
+    if not isinstance(rel_scale, int | float) or isinstance(rel_scale, bool):
+        return SCALED_MONTAGE_FILENAME
+    stem = Path(SCALED_MONTAGE_FILENAME).stem
+    return f"{stem}-rel{rel_scale:.4g}".replace(".", "p") + Path(SCALED_MONTAGE_FILENAME).suffix
+
+
+def _read_scaled_montage_info(project_dir: Path) -> dict:
+    """What was recorded when the scaled montage was generated: "rel_scale", and "skipped"/"total"
+    if some particles didn't fit. Empty if nothing usable was recorded."""
+    try:
+        data = json.loads((project_dir / SCALED_MONTAGE_INFO_FILENAME).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 async def _confirm_generate_config(project_dir: Path, config: dict) -> tuple[bool, dict[str, object] | None]:
@@ -709,19 +735,24 @@ def index() -> None:
                 else:
                     report_failure(lines, "Montage creation failed", image)
 
-            async def save_montage_as() -> None:
-                destination = await _choose_save_location(project_dir, montage_filename)
+            async def save_copy_as(source_path: Path, what: str, suggested_name: str | None = None) -> None:
+                destination = await _choose_save_location(project_dir, suggested_name or source_path.name)
                 if destination is None:
                     return
                 try:
-                    await nicegui_run.io_bound(shutil.copy, montage_path, destination)
+                    await nicegui_run.io_bound(shutil.copy, source_path, destination)
                 except OSError as e:
-                    ui.notify(f"Couldn't save montage: {e}", type="negative")
+                    ui.notify(f"Couldn't save {what}: {e}", type="negative")
                     return
-                ui.notify(f"Montage saved to {destination}", type="positive")
+                ui.notify(f"{what.capitalize()} saved to {destination}", type="positive")
+
+            async def save_montage_as() -> None:
+                await save_copy_as(montage_path, "montage")
 
             if montage_path.is_file():
-                ui.image(str(montage_path)).classes("w-full max-w-2xl")
+                # force_reload: the file keeps the same URL when regenerated, and the browser
+                # would otherwise keep showing its cached copy of the previous one.
+                ui.image(str(montage_path)).classes("w-full max-w-2xl").force_reload()
                 ui.label(str(montage_path)).classes("font-mono text-xs text-gray-500 break-all")
                 with ui.row().classes("items-center gap-2"):
                     ui.button("Regenerate montage", on_click=generate_montage).tooltip(
@@ -736,6 +767,81 @@ def index() -> None:
                     "Builds a montage image of the particles found, from this project's existing results"
                     + (" matching the current filter" if active_filter else "")
                 )
+
+            scaled_montage_path = project_dir / SCALED_MONTAGE_FILENAME
+            scaled_info = _read_scaled_montage_info(project_dir) if scaled_montage_path.is_file() else {}
+
+            async def generate_scaled_montage() -> None:
+                rel_scale = scaled_rel_scale_input.value
+                if rel_scale is None or not 0 < rel_scale <= 1:
+                    ui.notify("Relative scale must be greater than 0 and at most 1", type="negative")
+                    return
+                image = await image_for_existing_project(project_dir)
+                if image is None:
+                    return
+                set_status("Building scaled montage…", busy=True)
+                command = docker_client.make_montage_scaled_command(
+                    project_dir,
+                    docker_client.stats_filename(project_dir),
+                    image=image,
+                    output_filename=SCALED_MONTAGE_FILENAME,
+                    rel_scale=float(rel_scale),
+                )
+                exit_code, lines = await run_streamed_to_log(command)
+                if exit_code == 0:
+                    info: dict = {"rel_scale": float(rel_scale)}
+                    skipped = docker_client.skipped_particles(lines)
+                    if skipped:
+                        info.update(skipped=skipped[0], total=skipped[1])
+                    (project_dir / SCALED_MONTAGE_INFO_FILENAME).write_text(json.dumps(info))
+                    set_status("Scaled montage created", busy=False)
+                    await refresh_results(project_dir)
+                else:
+                    report_failure(lines, "Scaled montage creation failed", image)
+
+            if not docker_client.supports_recent_cli(pinned):
+                ui.label(
+                    f"A scaled montage needs PyOPIA {docker_client.MIN_RECENT_CLI_VERSION} or newer - "
+                    f"this project was processed with v{pinned}."
+                ).classes("text-sm text-gray-500")
+            elif active_filter:
+                ui.label("A scaled montage can't be filtered by aux data yet - clear the filter to build one.").classes(
+                    "text-sm text-gray-500"
+                )
+            else:
+                if scaled_montage_path.is_file():
+                    ui.image(str(scaled_montage_path)).classes("w-full max-w-2xl").force_reload()
+                    ui.label(str(scaled_montage_path)).classes("font-mono text-xs text-gray-500 break-all")
+                    if scaled_info.get("skipped") and scaled_info.get("total"):
+                        ui.label(
+                            f"{scaled_info['skipped']} of {scaled_info['total']} particles didn't fit and aren't "
+                            "shown in this montage. A larger Relative scale gives them more room."
+                        ).classes("text-sm text-amber-900 bg-amber-100 p-2 rounded max-w-2xl")
+                with ui.row().classes("items-center gap-2"):
+                    scaled_rel_scale_input = ui.number(
+                        "Relative scale (0-1)", value=scaled_info.get("rel_scale", 1.0), min=0.01, max=1.0, step=0.05
+                    ).classes("w-44")
+                    scaled_rel_scale_input.tooltip(
+                        "The fraction of the full canvas the particles are packed into. Set it proportional "
+                        "to relative sample size when comparing several montages side by side, so how full "
+                        "each looks is a fair comparison"
+                    )
+                    ui.button(
+                        "Regenerate scaled montage" if scaled_montage_path.is_file() else "Generate scaled montage",
+                        on_click=generate_scaled_montage,
+                    ).tooltip(
+                        "Builds a montage where the packed area reflects the amount of data, rather than "
+                        "always filling the same canvas"
+                    )
+                    if scaled_montage_path.is_file():
+                        ui.button(
+                            "Save scaled montage as…",
+                            on_click=lambda: save_copy_as(
+                                scaled_montage_path,
+                                "scaled montage",
+                                _scaled_montage_save_name(scaled_info.get("rel_scale")),
+                            ),
+                        ).tooltip("Copy the scaled montage image to a location of your choice")
 
             async def export_to_ecotaxa() -> None:
                 image = await image_for_existing_project(project_dir)
@@ -1776,6 +1882,8 @@ def index() -> None:
         # necessarily matches them. Remove it rather than leave a stale one displayed;
         # the Results tab's own "Generate montage" button makes a new one on demand.
         (project_dir / "montage.png").unlink(missing_ok=True)
+        (project_dir / SCALED_MONTAGE_FILENAME).unlink(missing_ok=True)
+        (project_dir / SCALED_MONTAGE_INFO_FILENAME).unlink(missing_ok=True)
 
         set_status("Done", busy=False)
         await refresh_project_state()

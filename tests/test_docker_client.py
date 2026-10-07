@@ -43,6 +43,19 @@ def test_init_project_command_passes_a_non_default_instrument(tmp_path: Path) ->
     assert command[-5:] == ["init-project", "demo", "--example-data", "--instrument", "holo"]
 
 
+def test_make_montage_scaled_command_passes_output_filename_and_rel_scale(tmp_path: Path) -> None:
+    command = docker_client.make_montage_scaled_command(tmp_path, "processed/demo-STATS.nc", rel_scale=0.4)
+
+    assert command[-6:] == [
+        "make-montage-scaled",
+        "processed/demo-STATS.nc",
+        "--output-filename",
+        "montage-scaled.png",
+        "--rel-scale",
+        "0.4",
+    ]
+
+
 def test_image_version_reads_the_tag_and_ignores_floating_tags() -> None:
     assert docker_client.image_version("ghcr.io/sintef/pyopia:v2.17.0") == "2.17.0"
     assert docker_client.image_version("ghcr.io/sintef/pyopia:V2.18.0") == "2.18.0"
@@ -1360,3 +1373,19 @@ async def test_run_streamed_times_out_on_prolonged_inactivity(monkeypatch: pytes
 
     assert exit_code == -1
     assert any("No output received for" in line for line in lines)
+
+
+def test_skipped_particles_reads_the_scaled_montage_warning() -> None:
+    warning = (
+        "33 of 53 particles could not be placed and were skipped - consider increasing msize to fit "
+        "all particles (and, if comparing this montage against others via rel_scale, increase msize "
+        "consistently for all of them)."
+    )
+
+    assert docker_client.skipped_particles(["LOAD STATS", warning, "STORING MONTAGE"]) == (33, 53)
+    # Still found when the console wrapped the line mid-phrase.
+    assert docker_client.skipped_particles(["33 of 53 particles could", "      not be placed and were skipped"]) == (
+        33,
+        53,
+    )
+    assert docker_client.skipped_particles(["LOAD STATS", "STORING MONTAGE"]) is None

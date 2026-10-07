@@ -183,6 +183,15 @@ EcoTaxa…** bundles particle images and stats into a zip ready to import into
 land in the project folder first (Docker can only write inside its own mounted
 folder), then offer their own **Save as…** to copy elsewhere.
 
+**Generate scaled montage** builds a different kind of montage, where the packed
+area reflects how much data there is rather than always filling the same canvas -
+useful for comparing datasets or subsets of different sizes. **Relative scale**
+(0-1) is the fraction of the canvas the particles are packed into; set it
+proportional to relative sample size when comparing several montages side by side,
+so how full each looks is a fair comparison. If some particles don't fit, a note under
+the montage says how many are missing - a larger Relative scale gives them more room. It
+needs PyOPIA 2.18.0 or newer, and can't be filtered by aux data yet.
+
 Further down: particle count, d50 (median particle size), and a size-distribution
 chart.
 

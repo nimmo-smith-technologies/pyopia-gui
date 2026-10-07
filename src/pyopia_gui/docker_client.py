@@ -367,6 +367,48 @@ def make_montage_command(
     return command
 
 
+def make_montage_scaled_command(
+    project_dir: Path,
+    stats_filename: str,
+    image: str = PYOPIA_IMAGE,
+    output_filename: str = "montage-scaled.png",
+    rel_scale: float = 1.0,
+) -> list[str]:
+    """Build the command to create a scaled montage from a processed STATS.nc file.
+
+    Needs PyOPIA 2.18.0+ (see `supports_recent_cli`). Unlike `make_montage_command`, every
+    particle is attempted, and `rel_scale` (0-1) is the fraction of the full canvas the
+    particles are packed into - set it proportional to relative sample size when comparing
+    several montages, so packed density stays a fair comparison. PyOPIA's command has no
+    aux-data filter option, so there's no `filter_variable` equivalent here.
+    """
+    return [
+        "docker",
+        "run",
+        "--rm",
+        *_user_args(),
+        *_volume_args(project_dir),
+        image,
+        "make-montage-scaled",
+        stats_filename,
+        "--output-filename",
+        output_filename,
+        "--rel-scale",
+        str(rel_scale),
+    ]
+
+
+_SKIPPED_PARTICLES = re.compile(r"(\d+) of (\d+) particles could not be placed")
+
+
+def skipped_particles(output_lines: list[str]) -> tuple[int, int] | None:
+    """(skipped, total) from `make-montage-scaled`'s warning that some particles didn't fit
+    in the canvas, or None if it didn't give one (PyOPIA only warns when some were skipped)."""
+    # Whitespace is collapsed so the match still works if the console wrapped the line.
+    match = _SKIPPED_PARTICLES.search(" ".join(" ".join(output_lines).split()))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
 def export_to_ecotaxa_command(
     project_dir: Path,
     stats_filename: str,
