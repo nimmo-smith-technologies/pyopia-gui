@@ -178,6 +178,9 @@ native app and actually run it:
       "N particles found across X of Y raw images (the rest had none
       detected)" - not just a bare "X images with detected particles" that
       could be misread as "only X of Y were processed".
+- [ ] On a project with a background-averaging step (the holo and SilCam
+      examples), the images that only build the background are named: e.g.
+      "(10 used only to build the background)", not counted as "none detected".
 - [ ] **Generate montage** / **Regenerate montage** produce a real montage
       image.
 - [ ] **Generate scaled montage** (project processed with PyOPIA 2.18.0+)

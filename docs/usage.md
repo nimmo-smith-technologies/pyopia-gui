@@ -203,6 +203,12 @@ needs PyOPIA 2.18.0 or newer, and can't be filtered by aux data yet.
 Further down: particle count, d50 (median particle size), and a size-distribution
 chart.
 
+The particle count only covers images that were actually analysed. When a project
+averages the background over the preceding images (the holo and SilCam examples do),
+the first few images of a run only build that background and contribute no particles -
+so on a small dataset the count can come from noticeably fewer images than the folder
+holds. The line under the count says how many images were used only that way.
+
 **Filtering by aux data**: if the project's config sets
 `steps.output.auxillary_data_file` (e.g. depth or temperature, interpolated onto
 each image's timestamp during processing), a **Filter by** control appears above

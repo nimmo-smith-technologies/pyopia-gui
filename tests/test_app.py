@@ -913,6 +913,38 @@ async def test_results_tab_distinguishes_particle_detections_from_raw_image_coun
     await user.should_see("the rest had none detected")
 
 
+async def test_results_tab_names_the_images_that_only_built_the_background(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: None)
+    tmp_path.joinpath("config.toml").write_text(
+        '[general]\nraw_files = "images/*.silc"\npixel_size = 24\n\n'
+        '[steps.correctbackground]\npipeline_class = "pyopia.background.CorrectBackgroundAccurate"\n'
+        "average_window = 5\n\n"
+        '[steps.output]\noutput_datafile = "processed/demo"\n'
+    )
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    for i in range(10):
+        (images_dir / f"frame{i:02d}.silc").write_bytes(b"")
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+
+    summary = vendored_stats.StatsSummary(
+        particle_count=103, images_with_particles=5, d50_microns=42.5, dias=[], number_distribution=[]
+    )
+    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("103 particles found across 5 of 10 raw images")
+    await user.should_see("5 used only to build the background")
+    await user.should_not_see("had none detected")
+
+
 async def test_results_tab_offers_regenerate_when_a_montage_already_exists(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2743,3 +2775,23 @@ async def test_results_tab_suggests_filter_describing_names_when_saving_filtered
     user.find(kind=ui.button, content="Save here").click()
     await asyncio.sleep(0.5)
     assert (tmp_path / expected_name).is_file()
+
+
+@pytest.mark.parametrize(
+    ("analysed", "total_raw", "background_images", "expected"),
+    [
+        (35, 35, 10, "across all 35 raw images"),
+        (25, 35, 10, "across 25 of 35 raw images (10 used only to build the background)"),
+        (20, 35, 10, "across 20 of 35 raw images (10 used only to build the background, the rest had none detected)"),
+        (25, 35, 0, "across 25 of 35 raw images (the rest had none detected)"),
+        (5, 8, 5, "across 5 of 8 raw images (3 used only to build the background)"),
+        (25, None, 10, "across 25 images with detected particles"),
+        (25, 10, 10, "across 25 images with detected particles"),
+    ],
+)
+def test_images_phrase_accounts_for_images_that_only_built_the_background(
+    analysed: int, total_raw: int | None, background_images: int, expected: str
+) -> None:
+    from pyopia_gui.main import _images_phrase
+
+    assert _images_phrase(analysed, total_raw, background_images) == expected

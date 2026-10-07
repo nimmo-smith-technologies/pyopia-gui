@@ -104,6 +104,29 @@ def _enlargeable_image(path: Path) -> None:
     small.on("click", dialog.open)
 
 
+def _images_phrase(analysed: int, total_raw: int | None, background_images: int) -> str:
+    """Where a particle count came from, e.g. "across 25 of 35 raw images (10 used only to build
+    the background, the rest had none detected)".
+
+    `analysed` is how many images appear in the stats, `total_raw` how many raw files the project
+    has (None if unknown) and `background_images` how many of a run's first images only build the
+    background and so can't contribute particles - see `docker_client.required_background_context`.
+    """
+    if not total_raw or total_raw < analysed:
+        return f"across {analysed} images with detected particles"
+    if total_raw == analysed:
+        return f"across all {total_raw} raw images"
+    rest = total_raw - analysed
+    background = min(background_images, rest)
+    if not background:
+        note = "the rest had none detected"
+    elif background == rest:
+        note = f"{background} used only to build the background"
+    else:
+        note = f"{background} used only to build the background, the rest had none detected"
+    return f"across {analysed} of {total_raw} raw images ({note})"
+
+
 def _filtered_save_name(filename: str, active_filter: tuple[str, float, float] | None) -> str:
     """The suggested filename for saving `filename` made with the aux-data `active_filter`
     (column, low, high) applied - e.g. `montage.png` filtered to depth 5-10 becomes
@@ -939,10 +962,14 @@ def index() -> None:
                 # project's current raw file count (best effort - falls back to the
                 # old wording if that count can't be read, or is smaller than
                 # images_with_particles) makes that distinction clear instead of
-                # reading like a processing shortfall.
+                # reading like a processing shortfall. The first images of a run that
+                # only build the background (see _images_phrase) are another reason an
+                # image is missing, and are named separately.
                 total_raw_files = None
+                background_images = 0
                 try:
                     raw_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                    background_images = docker_client.required_background_context(raw_config)
                     raw_files_pattern = (raw_config.get("general") or {}).get("raw_files")
                     if raw_files_pattern:
                         raw_paths = await nicegui_run.io_bound(
@@ -951,16 +978,7 @@ def index() -> None:
                         total_raw_files = len(raw_paths)
                 except (OSError, tomllib.TOMLDecodeError):
                     pass
-                if total_raw_files and total_raw_files >= summary.images_with_particles:
-                    if total_raw_files == summary.images_with_particles:
-                        images_phrase = f"across all {total_raw_files} raw images"
-                    else:
-                        images_phrase = (
-                            f"across {summary.images_with_particles} of {total_raw_files} raw images "
-                            "(the rest had none detected)"
-                        )
-                else:
-                    images_phrase = f"across {summary.images_with_particles} images with detected particles"
+                images_phrase = _images_phrase(summary.images_with_particles, total_raw_files, background_images)
                 ui.label(f"{summary.particle_count} particles found {images_phrase}").classes("text-md")
                 ui.label(f"d50 (median particle size): {summary.d50_microns:.1f} µm").classes("text-md")
                 # The size bins are log-spaced (get_size_bins() - each ~1.18x the last), so
