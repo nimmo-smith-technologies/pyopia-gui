@@ -126,6 +126,9 @@ native app and actually run it:
       a PyOPIA version; on one with existing results, shows the pinned
       version (with a newer-version note if applicable) before running.
 - [ ] Real run streams log output live and finishes with a status/notify.
+- [ ] Each PyOPIA log record is a single line in the log panel (the file reference sits
+      far to the right, reachable by scrolling sideways), not wrapped over three or
+      four short lines.
 - [ ] **Cancel processing** appears only while a run is going. Confirming stops the run's
       container within a few seconds (`docker ps` shows no `pyopia-gui-…` container), removes
       the partial output folder and the progress and `.pyopia_gui_running` files, shows

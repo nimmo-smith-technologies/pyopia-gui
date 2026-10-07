@@ -1620,3 +1620,30 @@ async def test_a_stalled_run_stops_its_container_not_just_the_docker_command(
     assert exit_code == -1
     assert stopped == ["pyopia-gui-ab12"]
     assert killed == [True]
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda d: docker_client.init_project_command(d, "demo", image="img"),
+        lambda d: docker_client.generate_config_command(
+            d, "holo", "*.pgm", "model.keras", "processed", "demo", image="img"
+        ),
+        lambda d: docker_client.process_command(d, image="img"),
+        lambda d: docker_client.merge_mfdata_command(d, image="img"),
+        lambda d: docker_client.make_montage_command(d, "processed/demo-STATS.nc", image="img"),
+        lambda d: docker_client.make_montage_scaled_command(d, "processed/demo-STATS.nc", image="img"),
+        lambda d: docker_client.export_to_ecotaxa_command(d, "processed/demo-STATS.nc", "out.zip", image="img"),
+    ],
+)
+def test_commands_whose_output_is_shown_tell_pyopia_the_console_is_wide(
+    tmp_path: Path, build: Callable[[Path], list[str]]
+) -> None:
+    # Without it PyOPIA's console logging wraps every line at the 80 columns a container
+    # with no terminal defaults to.
+    (tmp_path / "config.toml").write_text('[steps.output]\noutput_datafile = "processed/demo"\n')
+    command = build(tmp_path)
+
+    env_index = command.index("COLUMNS=140")
+    assert command[env_index - 1] == "-e"
+    assert env_index < command.index("img")

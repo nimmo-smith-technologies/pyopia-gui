@@ -218,6 +218,17 @@ def _volume_args(directory: Path) -> list[str]:
     return ["-v", f"{resolved}:{_CONTAINER_WORKDIR}", "-w", _CONTAINER_WORKDIR]
 
 
+# PyOPIA's console logging (Rich) wraps every line to the terminal width, and a container with no
+# terminal reports 80 columns - so each log record shows as three or four short lines. Tell it
+# the log panel is wider.
+_CONSOLE_COLUMNS = 140
+
+
+def _console_args() -> list[str]:
+    """Environment for a container whose output is shown in the log panel (see _CONSOLE_COLUMNS)."""
+    return ["-e", f"COLUMNS={_CONSOLE_COLUMNS}"]
+
+
 def _user_args() -> list[str]:
     """Match the container process to the host user, so output files aren't root-owned.
 
@@ -242,6 +253,7 @@ def init_project_command(
         "run",
         "--rm",
         *_volume_args(parent_dir),
+        *_console_args(),
         image,
         "init-project",
         project_name,
@@ -274,6 +286,7 @@ def generate_config_command(
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
+        *_console_args(),
         image,
         "generate-config",
         instrument,
@@ -365,6 +378,7 @@ def process_command(
         *(["--name", container_name] if container_name else []),
         *_user_args(),
         *_volume_args(project_dir),
+        *_console_args(),
         image,
         "process",
         config_filename,
@@ -447,6 +461,7 @@ def merge_mfdata_command(
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
+        *_console_args(),
         image,
         "merge-mfdata",
         path_to_data,
@@ -473,6 +488,7 @@ def make_montage_command(
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
+        *_console_args(),
         image,
         "make-montage",
         stats_filename,
@@ -506,6 +522,7 @@ def make_montage_scaled_command(
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
+        *_console_args(),
         image,
         "make-montage-scaled",
         stats_filename,
@@ -546,6 +563,7 @@ def export_to_ecotaxa_command(
         "--rm",
         *_user_args(),
         *_volume_args(project_dir),
+        *_console_args(),
         image,
         "export-to-ecotaxa",
         stats_filename,
