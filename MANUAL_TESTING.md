@@ -188,6 +188,12 @@ native app and actually run it:
 - [ ] On a project with a background-averaging step (the holo and SilCam
       examples), the images that only build the background are named: e.g.
       "(10 used only to build the background)", not counted as "none detected".
+- [ ] Particle count, d50 and the size-distribution chart appear (a second or
+      two after the tab opens - PyOPIA computes them in its container for
+      projects processed with 2.18.0+); the same numbers as before for an
+      existing project, and a project processed with 2.17.0 still shows them
+      (computed by the local copy). With an aux-data filter applied they narrow
+      to match; a failure shows "Couldn't compute summary statistics: …".
 - [ ] **Generate montage** / **Regenerate montage** produce a real montage
       image.
 - [ ] **Generate scaled montage** (project processed with PyOPIA 2.18.0+)

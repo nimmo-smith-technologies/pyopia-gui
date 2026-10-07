@@ -13,7 +13,8 @@ import secrets
 import subprocess
 import tomllib
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from urllib.error import URLError
@@ -695,6 +696,85 @@ def list_available_versions(timeout: float = 5.0) -> list[str]:
         versions.append((version_tuple, tag.lstrip("vV")))
     versions.sort(reverse=True)
     return [tag for _, tag in versions]
+
+
+@dataclass
+class StatsSummary:
+    particle_count: int
+    images_with_particles: int
+    d50_microns: float
+    dias: Sequence[float]
+    number_distribution: Sequence[float]
+
+
+class StatsSummaryError(Exception):
+    """Summary statistics couldn't be computed - the message says why, in plain language."""
+
+
+# Runs inside the image, using PyOPIA's own `summary_from_stats` (the function behind its
+# `summary-stats` command) rather than a local copy of it. Run as a script instead of that
+# CLI command so an aux-data filter can be applied first, which the command can't do yet.
+_SUMMARIZE_STATS_SCRIPT = """
+import json, sys
+import pyopia.io
+import pyopia.statistics
+
+stats_path, pixel_size, aux_filter = sys.argv[1], float(sys.argv[2]), json.loads(sys.argv[3])
+stats = pyopia.io.load_stats(stats_path).to_pandas()
+if aux_filter is not None:
+    column, low, high = aux_filter
+    stats = stats[stats[column].between(low, high)]
+print(json.dumps(pyopia.statistics.summary_from_stats(stats, pixel_size)))
+"""
+
+
+def summarize_stats(
+    project_dir: Path,
+    stats_filename: str,
+    pixel_size: float,
+    aux_filter: tuple[str, float, float] | None = None,
+    image: str = PYOPIA_IMAGE,
+) -> StatsSummary:
+    """The Results tab's summary statistics (particle count, d50, size distribution) for the
+    project's `-STATS.nc` file, computed by PyOPIA itself inside `image` (2.18.0+, see
+    `supports_recent_cli`).
+
+    `aux_filter` is an optional (aux column name, min, max) restriction, as for
+    `make_montage_command`'s `filter_variable`. Raises `StatsSummaryError` if the container
+    can't be run or the file can't be summarised.
+    """
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "python",
+        *_volume_args(project_dir),
+        image,
+        "-c",
+        _SUMMARIZE_STATS_SCRIPT,
+        f"{_CONTAINER_WORKDIR}/{stats_filename}",
+        str(pixel_size),
+        json.dumps(aux_filter),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=120, text=True, **_no_console_kwargs())
+    except (subprocess.TimeoutExpired, OSError) as e:
+        raise StatsSummaryError(str(e)) from e
+    if result.returncode != 0:
+        error_lines = [line for line in result.stderr.splitlines() if line.strip()]
+        raise StatsSummaryError(error_lines[-1].strip() if error_lines else "PyOPIA exited with an error")
+    try:
+        payload = json.loads([line for line in result.stdout.splitlines() if line.startswith("{")][-1])
+        return StatsSummary(
+            particle_count=payload["particle_count"],
+            images_with_particles=payload["images_with_particles"],
+            d50_microns=payload["d50_microns"],
+            dias=payload["dias"],
+            number_distribution=payload["number_distribution"],
+        )
+    except (IndexError, ValueError, KeyError) as e:
+        raise StatsSummaryError("PyOPIA returned output pyopia-gui couldn't read") from e
 
 
 def read_pinned_version(project_dir: Path, config_filename: str = "config.toml") -> str | None:

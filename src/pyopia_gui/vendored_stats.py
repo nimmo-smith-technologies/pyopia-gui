@@ -8,20 +8,18 @@ The functions below are adapted from SINTEF/pyopia's `pyopia/statistics.py` and
 licensed BSD-3-Clause - see THIRD_PARTY_LICENSES.md at the repo root for the
 full license text and copyright notice.
 
-PyOPIA's own Python library already has this logic, but none of it is exposed
-via PyOPIA's CLI yet (only `process`/`merge-mfdata`/`make-montage`/etc. are
-real subcommands) - see ADR 0007
-(docs/decisions/0007-2026-08-14-vendor-pyopia-statistics-functions.md) for why
-pyopia-gui vendors a local copy here instead of running this via Docker, and
-the linked tracking issue for the plan to migrate to a real PyOPIA CLI command
-once one exists, dropping this file.
+PyOPIA 2.18.0 added `summary_from_stats`, which pyopia-gui now runs inside the PyOPIA
+image instead (see `docker_client.summarize_stats`). This local copy is only used for a
+project processed with an older PyOPIA version, whose image doesn't have it - see ADR 0007
+(docs/decisions/0007-2026-08-14-vendor-pyopia-statistics-functions.md) and the linked
+tracking issue for the plan to drop this file once those no longer need supporting.
 """
-
-from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from pyopia_gui.docker_client import StatsSummary
 
 
 def load_stats_as_dataframe(stats_path: str) -> pd.DataFrame:
@@ -89,15 +87,6 @@ def count_images_in_stats(stats: pd.DataFrame) -> int:
     contributes no rows here and is invisible to this count.
     """
     return len(pd.to_datetime(stats["timestamp"]).unique())
-
-
-@dataclass
-class StatsSummary:
-    particle_count: int
-    images_with_particles: int
-    d50_microns: float
-    dias: np.ndarray
-    number_distribution: np.ndarray
 
 
 def summarize(stats_path: str, pixel_size: float, aux_filter: tuple[str, float, float] | None = None) -> StatsSummary:

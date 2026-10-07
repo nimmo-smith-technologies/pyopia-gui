@@ -8,9 +8,7 @@ import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
-import pandas as pd
 import pytest
-import xarray as xr
 from nicegui import ui
 from nicegui.testing import User
 from nicegui.testing.user_interaction import UserInteraction
@@ -63,6 +61,11 @@ def _no_real_docker_introspection(monkeypatch: pytest.MonkeyPatch) -> None:
     that do care override this explicitly with their own monkeypatch.setattr(...) call.
     """
     monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+
+    def no_real_summary(*a: object, **k: object) -> None:
+        raise docker_client.StatsSummaryError("no real PyOPIA container in tests")
+
+    monkeypatch.setattr(docker_client, "summarize_stats", no_real_summary)
 
     async def fake_generate_thumbnails(*a: object, **k: object) -> dict[str, str]:
         return {}
@@ -1009,10 +1012,10 @@ async def test_results_tab_distinguishes_particle_detections_from_raw_image_coun
     (tmp_path / "processed").mkdir()
     (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
 
-    summary = vendored_stats.StatsSummary(
+    summary = docker_client.StatsSummary(
         particle_count=103, images_with_particles=5, d50_microns=42.5, dias=[], number_distribution=[]
     )
-    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
+    monkeypatch.setattr(docker_client, "summarize_stats", lambda *a, **k: summary)
 
     await user.open("/")
     folder_input = user.find(ui.input).elements.pop()
@@ -1040,10 +1043,10 @@ async def test_results_tab_names_the_images_that_only_built_the_background(
     (tmp_path / "processed").mkdir()
     (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
 
-    summary = vendored_stats.StatsSummary(
+    summary = docker_client.StatsSummary(
         particle_count=103, images_with_particles=5, d50_microns=42.5, dias=[], number_distribution=[]
     )
-    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
+    monkeypatch.setattr(docker_client, "summarize_stats", lambda *a, **k: summary)
 
     await user.open("/")
     folder_input = user.find(ui.input).elements.pop()
@@ -1182,6 +1185,28 @@ async def test_results_tab_saves_a_scaled_montage_under_a_name_containing_its_sc
     await asyncio.sleep(0.2)
 
     assert (exports_dir / "montage-scaled-rel0p4.png").read_bytes() == b"a scaled montage"
+
+
+async def test_results_tab_summarises_locally_for_a_version_without_summary_stats(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # PyOPIA's summary_from_stats arrived in 2.18.0 - a project processed with an older
+    # version is still summarised by the local copy, not left without statistics.
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "2.17.0")
+    _write_config_with_pixel_size(tmp_path)
+    (tmp_path / "processed").mkdir()
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    summary = docker_client.StatsSummary(
+        particle_count=7, images_with_particles=2, d50_microns=42.5, dias=[], number_distribution=[]
+    )
+    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("7 particles found")
 
 
 async def test_results_tab_generates_a_scaled_montage_with_the_chosen_relative_scale(
@@ -1331,10 +1356,10 @@ async def test_results_tab_export_size_distribution_writes_a_csv(
     (tmp_path / "processed").mkdir()
     (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
 
-    summary = vendored_stats.StatsSummary(
+    summary = docker_client.StatsSummary(
         particle_count=10, images_with_particles=2, d50_microns=42.5, dias=[2.72, 3.21], number_distribution=[1, 2]
     )
-    monkeypatch.setattr(vendored_stats, "summarize", lambda *a, **k: summary)
+    monkeypatch.setattr(docker_client, "summarize_stats", lambda *a, **k: summary)
 
     await user.open("/")
     folder_input = user.find(ui.input).elements.pop()
@@ -1362,16 +1387,26 @@ async def test_results_tab_aux_filter_narrows_particle_count_and_clears(
     )
     (tmp_path / "aux.csv").write_text("% COMMENT\n% COMMENT\n,\n,\ntime,depth\n2026-01-01T00:00:00,1.0\n")
     (tmp_path / "processed").mkdir()
-    stats_path = tmp_path / "processed" / "demo-STATS.nc"
-    dataset = xr.Dataset(
-        {
-            "equivalent_diameter": ("index", [2.72, 3.21, 4.0]),
-            "timestamp": ("index", pd.to_datetime(["2026-01-01T00:00:00"] * 3)),
-            "depth": ("index", [1.0, 5.0, 9.0]),
-        },
-        coords={"index": [0, 1, 2]},
-    )
-    dataset.to_netcdf(stats_path, engine="h5netcdf")
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+    filters_seen: list[tuple[str, float, float] | None] = []
+
+    def fake_summarize(
+        project_dir: Path,
+        stats_filename: str,
+        pixel_size: float,
+        aux_filter: tuple[str, float, float] | None = None,
+        image: str | None = None,
+    ) -> docker_client.StatsSummary:
+        filters_seen.append(aux_filter)
+        return docker_client.StatsSummary(
+            particle_count=3 if aux_filter is None else 2,
+            images_with_particles=1,
+            d50_microns=40.0,
+            dias=[],
+            number_distribution=[],
+        )
+
+    monkeypatch.setattr(docker_client, "summarize_stats", fake_summarize)
 
     await user.open("/")
     folder_input = user.find(ui.input).elements.pop()
@@ -1392,6 +1427,8 @@ async def test_results_tab_aux_filter_narrows_particle_count_and_clears(
     await asyncio.sleep(0.2)
 
     await user.should_see("3 particles found")
+    assert filters_seen[0] is None
+    assert ("depth", 5.0, 9.0) in filters_seen
 
 
 async def test_run_reuses_pinned_version_from_existing_output(
@@ -2860,15 +2897,24 @@ async def test_results_tab_suggests_filter_describing_names_when_saving_filtered
     )
     (tmp_path / "aux.csv").write_text("% COMMENT\n% COMMENT\n,\n,\ntime,depth\n2026-01-01T00:00:00,1.0\n")
     (tmp_path / "processed").mkdir()
-    dataset = xr.Dataset(
-        {
-            "equivalent_diameter": ("index", [2.72, 3.21, 4.0]),
-            "timestamp": ("index", pd.to_datetime(["2026-01-01T00:00:00"] * 3)),
-            "depth": ("index", [1.0, 5.0, 9.0]),
-        },
-        coords={"index": [0, 1, 2]},
-    )
-    dataset.to_netcdf(tmp_path / "processed" / "demo-STATS.nc", engine="h5netcdf")
+    (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
+
+    def fake_summarize(
+        project_dir: Path,
+        stats_filename: str,
+        pixel_size: float,
+        aux_filter: tuple[str, float, float] | None = None,
+        image: str | None = None,
+    ) -> docker_client.StatsSummary:
+        return docker_client.StatsSummary(
+            particle_count=3 if aux_filter is None else 2,
+            images_with_particles=1,
+            d50_microns=40.0,
+            dias=[2.72, 3.21],
+            number_distribution=[1, 2],
+        )
+
+    monkeypatch.setattr(docker_client, "summarize_stats", fake_summarize)
     (tmp_path / "montage-filtered.png").write_bytes(b"a filtered montage")
 
     await user.open("/")

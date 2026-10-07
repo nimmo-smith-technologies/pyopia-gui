@@ -969,8 +969,20 @@ def index() -> None:
 
             try:
                 px_size = docker_client.pixel_size(project_dir)
-                summary = await nicegui_run.io_bound(vendored_stats.summarize, str(stats_path), px_size, active_filter)
-            except _STATS_READ_ERRORS as e:
+                if docker_client.supports_recent_cli(pinned):
+                    summary = await nicegui_run.io_bound(
+                        docker_client.summarize_stats,
+                        project_dir,
+                        docker_client.stats_filename(project_dir),
+                        px_size,
+                        active_filter,
+                        docker_client.image_for_version(pinned),
+                    )
+                else:
+                    summary = await nicegui_run.io_bound(
+                        vendored_stats.summarize, str(stats_path), px_size, active_filter
+                    )
+            except (*_STATS_READ_ERRORS, docker_client.StatsSummaryError) as e:
                 ui.label(f"Couldn't compute summary statistics: {e}").classes("text-sm text-red")
             else:
                 if summary is None:

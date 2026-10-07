@@ -43,6 +43,76 @@ def test_init_project_command_passes_a_non_default_instrument(tmp_path: Path) ->
     assert command[-5:] == ["init-project", "demo", "--example-data", "--instrument", "holo"]
 
 
+def _fake_summary_run(monkeypatch: pytest.MonkeyPatch, *, stdout: str = "", stderr: str = "", returncode: int = 0):
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(docker_client.subprocess, "run", fake_run)
+    return calls
+
+
+_SUMMARY_JSON = (
+    '{"particle_count": 3, "images_with_particles": 2, "d50_microns": 41.5, '
+    '"dias": [2.72, 3.21], "number_distribution": [1.0, 2.0]}'
+)
+
+
+def test_summarize_stats_runs_pyopias_summary_in_the_image_and_reads_its_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TensorFlow-style startup noise on stdout must not be mistaken for the result.
+    calls = _fake_summary_run(monkeypatch, stdout=f"some startup noise\n{_SUMMARY_JSON}\n")
+
+    summary = docker_client.summarize_stats(
+        tmp_path, "processed/demo-STATS.nc", 24.0, ("depth", 5.0, 9.0), "img:v2.18.0"
+    )
+
+    assert summary == docker_client.StatsSummary(3, 2, 41.5, [2.72, 3.21], [1.0, 2.0])
+    command = calls[0]
+    assert command[command.index("--entrypoint") + 1] == "python"
+    assert "img:v2.18.0" in command
+    assert command[-3:] == ["/workspace/processed/demo-STATS.nc", "24.0", '["depth", 5.0, 9.0]']
+
+
+def test_summarize_stats_passes_no_filter_as_json_null(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_summary_run(monkeypatch, stdout=_SUMMARY_JSON)
+
+    docker_client.summarize_stats(tmp_path, "processed/demo-STATS.nc", 24.0)
+
+    assert calls[0][-1] == "null"
+
+
+def test_summarize_stats_reports_the_containers_last_error_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_summary_run(
+        monkeypatch, returncode=1, stderr="Traceback (most recent call last):\n  ...\nKeyError: 'depth'\n"
+    )
+
+    with pytest.raises(docker_client.StatsSummaryError, match="KeyError: 'depth'"):
+        docker_client.summarize_stats(tmp_path, "processed/demo-STATS.nc", 24.0)
+
+
+def test_summarize_stats_reports_unreadable_output_and_a_missing_docker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_summary_run(monkeypatch, stdout="no json here")
+
+    with pytest.raises(docker_client.StatsSummaryError):
+        docker_client.summarize_stats(tmp_path, "processed/demo-STATS.nc", 24.0)
+
+    def no_docker(command: list[str], **kwargs: object) -> None:
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(docker_client.subprocess, "run", no_docker)
+
+    with pytest.raises(docker_client.StatsSummaryError):
+        docker_client.summarize_stats(tmp_path, "processed/demo-STATS.nc", 24.0)
+
+
 def test_process_command_adds_the_progress_file_only_when_asked(tmp_path: Path) -> None:
     assert "--progress-file" not in docker_client.process_command(tmp_path)
 
