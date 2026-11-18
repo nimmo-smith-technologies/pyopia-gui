@@ -124,13 +124,18 @@ Raw instrument files aren't directly viewable image formats (SilCam's `.silc` an
 holo's `.pgm` are raw sensor data, not standard images), so pyopia-gui converts them
 to previewable thumbnails the same way PyOPIA's own tools would - the first time you
 view a page of images this takes a few seconds, but each thumbnail is cached
-afterwards, so revisiting the same page is instant.
+afterwards, so revisiting the same page is instant. The tab opens with the thumbnails
+already shown if the first page has been converted before; otherwise it shows how many
+raw files there are and waits for you to click **Load thumbnails**, so opening it on a
+large dataset doesn't start a long conversion you didn't ask for.
 
 You can also narrow a project down to a chosen subset of its raw images: tick
 individual thumbnails (or **Select all on this page**, handy for a quick test run
 against just a few images) and click **Use selected as raw_files** to point the
-project at just those. A banner appears while a subset is active, with a **Clear
-subset** button to revert to the original pattern.
+project at just those. To limit a run to the start of a large dataset instead, type a
+number in **Number of images** and click **Use only the first N as raw_files** - no
+thumbnails or ticking needed. A banner appears while a subset is active, with a
+**Clear subset** button to revert to the original pattern.
 
 ## Editing a project's configuration
 

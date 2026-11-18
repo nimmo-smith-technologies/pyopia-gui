@@ -1532,7 +1532,8 @@ def index() -> None:
             if outside_problem:
                 ui.label(outside_problem).classes("text-sm text-orange-600")
                 return
-            raw_paths = docker_client.list_raw_files(project_dir, raw_files_pattern)
+            # A large dataset can hold many thousands of files - list them off the event loop.
+            raw_paths = await nicegui_run.io_bound(docker_client.list_raw_files, project_dir, raw_files_pattern)
             if not raw_paths:
                 ui.label(f"No raw files found matching '{raw_files_pattern}'.").classes("text-sm text-gray-500")
                 return
@@ -1564,6 +1565,16 @@ def index() -> None:
             # Explorer load (reset, like `state` above, each time refresh_explorer runs) -
             # a checkbox's checked state on any given page is just `raw_path in selected`.
             selected: set[Path] = set()
+
+            with ui.row().classes("items-center gap-2"):
+                ui.label(f"{len(raw_paths)} raw files.").classes("text-sm text-gray-500")
+                first_n_input = ui.number("Number of images", min=1, max=len(raw_paths), precision=0)
+                first_n_input.classes("w-40")
+                use_first_n_button = ui.button("Use only the first N as raw_files")
+                use_first_n_button.tooltip(
+                    "Narrow this project to its first N images, in order - e.g. a quick test run "
+                    "against a large dataset. A button to revert appears above once applied."
+                )
 
             with ui.row().classes("items-center gap-2"):
                 previous_button = ui.button("Previous")
@@ -1611,18 +1622,34 @@ def index() -> None:
                 update_selection_controls()
                 await show_page()
 
+            async def narrow_to(ordered: list[Path], description: str) -> None:
+                current_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                new_config = docker_client.apply_raw_files_subset(project_dir, current_config, ordered)
+                await nicegui_run.io_bound(docker_client.write_config, project_dir, new_config)
+                ui.notify(f"raw_files narrowed to {description}", type="positive")
+                await refresh_config(project_dir)
+                await refresh_explorer(project_dir)
+
             async def use_selected_as_subset() -> None:
                 if not selected:
                     return
                 # Chronological (raw_paths) order, not selection-click order - chunking and
                 # background-correction both depend on processing files in sequence.
                 ordered = [p for p in raw_paths if p in selected]
-                current_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
-                new_config = docker_client.apply_raw_files_subset(project_dir, current_config, ordered)
-                await nicegui_run.io_bound(docker_client.write_config, project_dir, new_config)
-                ui.notify(f"raw_files narrowed to the {len(ordered)} selected image(s)", type="positive")
-                await refresh_config(project_dir)
-                await refresh_explorer(project_dir)
+                await narrow_to(ordered, f"the {len(ordered)} selected image(s)")
+
+            async def use_first_n_as_subset() -> None:
+                if first_n_input.value is None:
+                    ui.notify("Enter how many images to use.", type="warning")
+                    return
+                count = int(first_n_input.value)
+                if count < 1:
+                    ui.notify("Enter how many images to use.", type="warning")
+                    return
+                if count >= len(raw_paths):
+                    ui.notify(f"The project only has {len(raw_paths)} images, so all of them are already used.")
+                    return
+                await narrow_to(raw_paths[:count], f"the first {count} image(s)")
 
             progress_label = ui.label().classes("text-sm text-gray-500")
             progress_label.visible = False
@@ -1630,11 +1657,15 @@ def index() -> None:
             progress_bar.visible = False
             grid = ui.grid(columns=4).classes("w-full gap-2")
 
-            async def show_page(force: bool = False) -> None:
+            def update_page_controls() -> None:
                 page = state["page"]
                 page_label.set_text(f"Page {page + 1} of {page_count} ({len(raw_paths)} raw files)")
                 previous_button.set_enabled(page > 0)
                 next_button.set_enabled(page < page_count - 1)
+
+            async def show_page(force: bool = False) -> None:
+                page = state["page"]
+                update_page_controls()
 
                 page_paths = raw_paths[page * _EXPLORER_PAGE_SIZE : (page + 1) * _EXPLORER_PAGE_SIZE]
                 # Ordered the same way page_paths is (not a set) - this is the order images are
@@ -1719,8 +1750,23 @@ def index() -> None:
             select_all_button.on_click(select_all_on_page)
             clear_selection_button.on_click(clear_selection)
             use_subset_button.on_click(use_selected_as_subset)
+            use_first_n_button.on_click(use_first_n_as_subset)
             update_selection_controls()
-            await show_page()
+
+            # Converting a page of a large dataset's raw images can take a while, so it only
+            # starts by itself when there's nothing to convert; otherwise the user starts it
+            # (Next/Previous, Select all and Refresh load a page as well).
+            first_page = raw_paths[:_EXPLORER_PAGE_SIZE]
+            if all(docker_client.thumbnail_path(project_dir, p).is_file() for p in first_page):
+                await show_page()
+            else:
+                update_page_controls()
+                with grid:
+                    with ui.column().classes("col-span-4 items-start gap-2"):
+                        ui.label(
+                            "Thumbnails aren't loaded yet - converting raw images can take a while for large datasets."
+                        ).classes("text-sm text-gray-500")
+                        ui.button("Load thumbnails", on_click=lambda: show_page())
 
     # Converting a page of raw-image thumbnails is comparatively slow (a real Docker
     # call per page) - loaded lazily, only once the Explorer tab is actually opened,

@@ -2544,6 +2544,8 @@ async def test_explorer_tab_shows_a_thumbnail_grid_for_raw_files(
     user.find(kind=ui.tab, content="2. Raw data explorer").click()
 
     await user.should_see("Page 1 of 1")
+    await user.should_see("Load thumbnails")
+    user.find(kind=ui.button, content="Load thumbnails").click()
     await user.should_see("D20220608T184237.407722.silc")
     await user.should_see("D20220608T184238.407874.silc")
 
@@ -2638,6 +2640,85 @@ async def test_explorer_tab_apply_and_clear_raw_files_subset(
     assert not (tmp_path / docker_client.RAW_FILES_SUBSET_FILENAME).exists()
 
 
+async def test_explorer_tab_waits_to_convert_thumbnails_until_asked(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    calls: list[list[Path]] = []
+
+    async def fake_generate_thumbnails(project_dir: Path, raw_paths: list[Path], **k: object) -> dict[str, str]:
+        calls.append(raw_paths)
+        return {}
+
+    monkeypatch.setattr(docker_client, "generate_thumbnails", fake_generate_thumbnails)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "a.silc").write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Thumbnails aren't loaded yet")
+    await asyncio.sleep(0.2)
+    assert calls == []
+
+    user.find(kind=ui.button, content="Load thumbnails").click()
+    await asyncio.sleep(0.2)
+    assert [[p.name for p in c] for c in calls] == [["a.silc"]]
+
+
+async def test_explorer_tab_loads_thumbnails_by_itself_when_the_first_page_is_cached(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    raw_path = _write_project_with_one_raw_file_and_thumbnail(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+
+    await user.should_see(raw_path.name)
+    await user.should_not_see("Thumbnails aren't loaded yet")
+
+
+async def test_explorer_tab_uses_only_the_first_n_images(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    _write_config_with_a_step(tmp_path)
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    for name in ("c.silc", "a.silc", "b.silc"):
+        (images_dir / name).write_bytes(b"")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("3 raw files.")
+
+    user.find(kind=ui.button, content="Use only the first N as raw_files").click()
+    await user.should_see("Enter how many images to use")
+    assert docker_client.load_config(tmp_path)["general"]["raw_files"] == "images/*.silc"
+
+    user.find(kind=ui.number, content="Number of images").elements.pop().value = 2
+    user.find(kind=ui.button, content="Use only the first N as raw_files").click()
+    await user.should_see("Filtered to 2 raw image(s)")
+
+    config = docker_client.load_config(tmp_path)
+    assert config["general"]["raw_files"] == docker_client.RAW_FILES_SUBSET_FILENAME
+    assert (tmp_path / docker_client.RAW_FILES_SUBSET_FILENAME).read_text().splitlines() == [
+        "images/a.silc",
+        "images/b.silc",
+    ]
+
+
 async def test_explorer_tab_shows_a_plain_language_hint_for_a_load_mismatch(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2665,6 +2746,8 @@ async def test_explorer_tab_shows_a_plain_language_hint_for_a_load_mismatch(
     folder_input.value = str(tmp_path)
     await asyncio.sleep(0.2)
     user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Load thumbnails")
+    user.find(kind=ui.button, content="Load thumbnails").click()
 
     await user.should_see("load step doesn't match")
 
@@ -2690,6 +2773,8 @@ async def test_explorer_tab_refresh_button_retries_conversion(
     folder_input.value = str(tmp_path)
     await asyncio.sleep(0.2)
     user.find(kind=ui.tab, content="2. Raw data explorer").click()
+    await user.should_see("Load thumbnails")
+    user.find(kind=ui.button, content="Load thumbnails").click()
     await user.should_see("D20220608T184237.407722.silc")
     assert calls["n"] == 1
 
@@ -2767,6 +2852,8 @@ async def test_explorer_tab_converts_images_in_sorted_order(
     await asyncio.sleep(0.2)
     user.find(kind=ui.tab, content="2. Raw data explorer").click()
     await user.should_see("Page 1 of 1")
+    await user.should_see("Load thumbnails")
+    user.find(kind=ui.button, content="Load thumbnails").click()
     await asyncio.sleep(0.2)
 
     assert len(calls) == 1
