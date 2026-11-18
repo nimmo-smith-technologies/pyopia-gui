@@ -1846,9 +1846,32 @@ if overlay_source is not None:
 slice_filenames = None
 z_values = None
 im_stack = data.get("im_stack")
+plane_axis = None
+candidate_z_values = None
 if im_stack is not None:
+    recon_params = data.get("holo_recon_params")
+    if recon_params is not None:
+        try:
+            # Same formula PyOPIA's own MergeStats uses for stats['z'] (pyopia/instrument/holo.py)
+            # - real mm, not the internal FFT kernel's metres-with-refractive-index version.
+            candidate_z_values = list(
+                np.arange(recon_params["minZ"], recon_params["maxZ"] + recon_params["stepZ"], recon_params["stepZ"])
+            )
+        except (KeyError, TypeError):
+            candidate_z_values = None
+    # Older PyOPIA stores im_stack as (rows, columns, planes), newer as (planes, rows,
+    # columns). The plane count from the config says which axis holds the planes. Floating-point
+    # np.arange can disagree by one element with the one create_kernel() used to size the stack,
+    # so the axis is picked within one plane of that count. If neither or both ends match, the
+    # layout is unknown and showing no slices is safer than showing misread ones.
+    if candidate_z_values is not None and im_stack.ndim == 3:
+        near = [axis for axis in (0, 2) if abs(im_stack.shape[axis] - len(candidate_z_values)) <= 1]
+        if len(near) == 1:
+            plane_axis = near[0]
+
+if im_stack is not None and plane_axis is not None:
     slice_filenames = []
-    n_slices = im_stack.shape[2]
+    n_slices = im_stack.shape[plane_axis]
     for i in range(n_slices):
         if i % 10 == 0 or i == n_slices - 1:
             print(f"PREVIEW_PROGRESS Rendering depth slice {{i + 1}} of {{n_slices}}", flush=True)
@@ -1856,7 +1879,7 @@ if im_stack is not None:
         # stack's range - matches how a depth-stack viewer conventionally shows each
         # slice at its own best contrast, since a single global range would make most
         # slices look nearly blank next to whichever one happens to have the widest range.
-        arr = np.asarray(im_stack[:, :, i], dtype=np.float64)
+        arr = np.asarray(im_stack[i] if plane_axis == 0 else im_stack[:, :, i], dtype=np.float64)
         arr_min, arr_max = float(arr.min()), float(arr.max())
         normalized = (arr - arr_min) / (arr_max - arr_min) * 255 if arr_max > arr_min else np.zeros_like(arr)
         # Inverted - im_stack's own raw convention is high value = particle, but
@@ -1868,22 +1891,9 @@ if im_stack is not None:
         slice_filename = f"slice-{{i:04d}}.png"
         Image.fromarray(normalized.astype("uint8")).save(os.path.join(run_dir, slice_filename))
         slice_filenames.append(slice_filename)
-    recon_params = data.get("holo_recon_params")
-    if recon_params is not None:
-        try:
-            # Same formula PyOPIA's own MergeStats uses for stats['z'] (pyopia/instrument/holo.py)
-            # - real mm, not the internal FFT kernel's metres-with-refractive-index version.
-            candidate_z_values = list(
-                np.arange(recon_params["minZ"], recon_params["maxZ"] + recon_params["stepZ"], recon_params["stepZ"])
-            )
-        except (KeyError, TypeError):
-            candidate_z_values = None
-        # Floating-point np.arange can disagree by one element between this (unscaled,
-        # mm) computation and the one create_kernel() actually used to size im_stack
-        # (scaled to metres before its own arange) - if the counts don't match, showing
-        # no depth labels is safer than silently mislabeling/misaligning slices.
-        if candidate_z_values is not None and len(candidate_z_values) == im_stack.shape[2]:
-            z_values = candidate_z_values
+    # Depth labels only when the count matches exactly; otherwise mislabeling is worse than none.
+    if len(candidate_z_values) == n_slices:
+        z_values = candidate_z_values
 
 print(json.dumps({{
     "ok": True,
