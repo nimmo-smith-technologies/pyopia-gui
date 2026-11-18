@@ -37,7 +37,13 @@ tabs - each one only usable once it's actually relevant:
    just shows a spinner and the log). A
    **Processors to use** setting lets you split the run across multiple chunks for
    a speedup on a multi-core machine (requires the project's `steps.output.append`
-   setting to be `false`).
+   setting to be `false`). Each processor needs roughly 5 GB of memory (measured on
+   the holographic example), so pyopia-gui limits the setting to what Docker has room
+   for, and to half the project's number of images (PyOPIA needs at least two per
+   processor - a note under the setting shows both limits), and caps the processing container at 80% of Docker's CPUs and memory with no
+   swap, so a run that outgrows them can't take the whole computer down. A run that
+   goes quiet for ten minutes is stopped, and the usual cause is a worker running
+   out of memory - try fewer processors.
 6. **Results** - becomes available once that project actually has results (a
    processed stats file). If you point pyopia-gui at an already-processed project,
    it jumps here automatically and shows whatever's already there - see

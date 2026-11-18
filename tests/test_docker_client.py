@@ -425,6 +425,68 @@ def test_image_for_version_ignores_version_when_overridden(monkeypatch: pytest.M
     assert docker_client.image_for_version("9.16.20") == "ghcr.io/sintef/pyopia:latest"
 
 
+def test_docker_limits_reads_cpus_and_memory_from_docker_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        assert command[:2] == ["docker", "info"]
+        return subprocess.CompletedProcess(command, 0, stdout="22 66000000000\n", stderr="")
+
+    monkeypatch.setattr(docker_client.subprocess, "run", fake_run)
+
+    assert docker_client.docker_limits() == docker_client.DockerLimits(cpus=22, memory_bytes=66000000000)
+
+
+def test_docker_limits_is_none_when_docker_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        docker_client.subprocess, "run", lambda command, **kwargs: subprocess.CompletedProcess(command, 1, "", "down")
+    )
+
+    assert docker_client.docker_limits() is None
+
+
+@pytest.mark.parametrize(
+    ("cpus", "memory_gib", "expected"),
+    [(22, 62, 8), (4, 62, 2), (64, 16, 2), (2, 4, 1)],
+)
+def test_max_processors_is_bounded_by_cpus_and_by_memory(cpus: int, memory_gib: int, expected: int) -> None:
+    limits = docker_client.DockerLimits(cpus=cpus, memory_bytes=memory_gib * 1024**3)
+
+    assert docker_client.max_processors(limits) == expected
+
+
+def test_process_command_caps_the_container_at_most_of_dockers_resources_with_no_swap(tmp_path: Path) -> None:
+    limits = docker_client.DockerLimits(cpus=10, memory_bytes=10 * 1024**3)
+
+    command = docker_client.process_command(tmp_path, limits=limits)
+
+    memory = str(int(0.8 * 10 * 1024**3))
+    assert command[command.index("--cpus") + 1] == "8"
+    assert command[command.index("--memory") + 1] == memory
+    assert command[command.index("--memory-swap") + 1] == memory
+    assert "--cpus" not in docker_client.process_command(tmp_path)
+
+
+def test_interpret_failure_blames_memory_not_the_network_for_a_quiet_processing_run() -> None:
+    lines = ["No output received for 600s - this usually means a network operation has stalled. Stopping."]
+
+    assert "run out of memory" in docker_client.interpret_failure(lines, during_processing=True)
+    assert "network" in docker_client.interpret_failure(lines)
+
+
+def test_docs_url_links_pyopia_classes_only() -> None:
+    assert (
+        docker_client.docs_url("pyopia.process.Segment")
+        == "https://pyopia.readthedocs.io/en/stable/api.html#pyopia.process.Segment"
+    )
+    assert docker_client.docs_url("my_module.MyStep") is None
+
+
+def test_docs_version_note_only_when_the_project_is_older_than_the_newest_release() -> None:
+    assert "v2.18.0" in docker_client.docs_version_note("2.17.0", "2.18.0")
+    assert docker_client.docs_version_note("2.18.0", "2.18.0") is None
+    assert docker_client.docs_version_note(None, "2.18.0") is None
+    assert docker_client.docs_version_note("2.17.0", None) is None
+
+
 def test_nearest_available_version_picks_the_smallest_at_or_above_pinned() -> None:
     assert docker_client.nearest_available_version("2.16.15", ["2.17.0", "2.16.20", "2.16.16"]) == "2.16.16"
 
@@ -819,6 +881,28 @@ async def test_generate_thumbnails_reports_progress_and_maps_container_errors_ba
     assert errors == {str(bad_path): "OSError: boom"}
     assert progress_calls == [(1, 2), (2, 2)]
     assert done_calls == [(ok_path, None), (bad_path, "OSError: boom")]
+
+
+@pytest.mark.parametrize(("file_count", "expected"), [(10, 5), (11, 5), (3, 1), (1, 1)])
+def test_max_chunks_for_files_is_half_the_files_but_at_least_one(file_count: int, expected: int) -> None:
+    assert docker_client.max_chunks_for_files(file_count) == expected
+
+
+def test_classifier_problem_flags_an_enabled_classifier_without_a_model_path() -> None:
+    config = {"steps": {"classifier": {"pipeline_class": "pyopia.classify.Classify", "normalize_intensity": True}}}
+
+    assert "classifier step has no model_path" in docker_client.classifier_problem(config)
+    config["steps"]["classifier"]["model_path"] = "model.keras"
+    assert docker_client.classifier_problem(config) is None
+
+
+def test_classifier_problem_ignores_a_disabled_classifier_and_other_steps() -> None:
+    config = {
+        "steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment"}},
+        "steps_disabled": {"classifier": {"pipeline_class": "pyopia.classify.Classify"}},
+    }
+
+    assert docker_client.classifier_problem(config) is None
 
 
 def test_validate_project_missing_config(tmp_path: Path) -> None:

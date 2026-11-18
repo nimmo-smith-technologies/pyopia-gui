@@ -606,6 +606,56 @@ def index() -> None:
                 "Using more than one processor requires steps.output.append = false, set on the "
                 "Configuration tab - PyOPIA writes one file per chunk in that mode, then merges them."
             ).classes("text-xs text-gray-500 -mt-3")
+            processors_limit_label = ui.label("").classes("text-xs text-gray-500 -mt-3")
+            processors_limit_label.visible = False
+
+            async def count_raw_files(project_dir: Path) -> int | None:
+                """How many raw files the project's config points at, or None if that can't be
+                told (or there are none - PyOPIA reports that itself)."""
+                try:
+                    config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+                except (OSError, tomllib.TOMLDecodeError):
+                    return None
+                raw_files_pattern = ((config or {}).get("general") or {}).get("raw_files")
+                if not isinstance(raw_files_pattern, str):
+                    return None
+                raw_paths = await nicegui_run.io_bound(docker_client.list_raw_files, project_dir, raw_files_pattern)
+                return len(raw_paths) or None
+
+            docker_limits_cache: dict[str, docker_client.DockerLimits | None] = {}
+
+            async def apply_processor_limit() -> None:
+                """Cap "Processors to use" at what Docker has room for and at what the project's
+                number of raw files allows (see `max_chunks_for_files`), and say why."""
+                if "limits" not in docker_limits_cache:
+                    docker_limits_cache["limits"] = await nicegui_run.io_bound(docker_client.docker_limits)
+                limits = docker_limits_cache["limits"]
+                project_dir = Path(folder_input.value.strip()).expanduser().resolve()
+                file_count = (
+                    await count_raw_files(project_dir) if docker_client.validate_project(project_dir) is None else None
+                )
+                maximum: int | None = None
+                notes: list[str] = []
+                if limits is not None:
+                    maximum = docker_client.max_processors(limits)
+                    notes.append(
+                        f"Each processor needs roughly 5 GB of memory. Docker has {limits.cpus} CPUs and "
+                        f"{limits.memory_bytes / 1024**3:.0f} GB here, so up to {maximum} can run at once."
+                    )
+                if file_count is not None:
+                    by_files = docker_client.max_chunks_for_files(file_count)
+                    maximum = by_files if maximum is None else min(maximum, by_files)
+                    notes.append(
+                        f"This project has {file_count} raw images and each processor needs at least two, "
+                        f"so no more than {by_files} can be used."
+                    )
+                num_chunks_input.max = maximum
+                if maximum is not None and (num_chunks_input.value or 1) > maximum:
+                    num_chunks_input.value = maximum
+                processors_limit_label.set_text(" ".join(notes))
+                processors_limit_label.visible = bool(notes)
+
+            background_tasks.create(apply_processor_limit(), name="processor-limit")
 
             def update_strategy_enabled(*_args: object) -> None:
                 strategy_select.set_enabled((num_chunks_input.value or 1) > 1)
@@ -689,8 +739,12 @@ def index() -> None:
         exit_code = await docker_client.run_streamed(command, on_line)
         return exit_code, lines
 
-    def report_failure(lines: list[str], fallback: str, image: str = docker_client.PYOPIA_IMAGE) -> None:
-        message = docker_client.interpret_failure(lines, image) or f"{fallback} - see log below"
+    def report_failure(
+        lines: list[str], fallback: str, image: str = docker_client.PYOPIA_IMAGE, *, during_processing: bool = False
+    ) -> None:
+        message = docker_client.interpret_failure(lines, image, during_processing=during_processing) or (
+            f"{fallback} - see log below"
+        )
         log.push(f"→ {message}", classes="text-yellow-300 font-bold")
         set_status(message, busy=False)
         ui.notify(message, type="negative")
@@ -1684,6 +1738,16 @@ def index() -> None:
 
     tabs.on_value_change(lambda: background_tasks.create(load_explorer_if_needed(), name="explorer-lazy-load"))
 
+    async def refresh_processor_limit_if_on_process_tab() -> None:
+        # The raw-file count changes with the project and with a narrowed subset (Explorer),
+        # so it's re-read whenever the Process tab is opened.
+        if tabs.value == "process":
+            await apply_processor_limit()
+
+    tabs.on_value_change(
+        lambda: background_tasks.create(refresh_processor_limit_if_on_process_tab(), name="processor-limit-refresh")
+    )
+
     # "run_dir" tracks the on-disk folder (project_dir / PREVIEW_DIR_NAME / <run id>)
     # holding the most recent successful preview's overlay/slice images, so it can be
     # deleted once a newer run's images have replaced it on screen - never before, so
@@ -1892,6 +1956,7 @@ def index() -> None:
 
         if is_valid:
             await refresh_config(project_dir)
+        background_tasks.create(apply_processor_limit(), name="processor-limit")  # may ask Docker, so not awaited
         await refresh_preview(project_dir)
         await load_explorer_if_needed()  # covers already being on the Explorer tab
 
@@ -2000,6 +2065,37 @@ def index() -> None:
 
         num_chunks = int(num_chunks_input.value or 1)
         strategy = strategy_select.value
+        limits = await nicegui_run.io_bound(docker_client.docker_limits)
+        if limits is not None and num_chunks > docker_client.max_processors(limits):
+            ui.notify(
+                f"Docker has memory for at most {docker_client.max_processors(limits)} processors here - "
+                "processing not started.",
+                type="negative",
+            )
+            set_status("Ready", busy=False)
+            run_button.enable()
+            return
+        try:
+            run_config = await nicegui_run.io_bound(docker_client.load_config, project_dir)
+        except (OSError, tomllib.TOMLDecodeError):
+            run_config = None
+        classifier_problem = docker_client.classifier_problem(run_config) if run_config else None
+        if classifier_problem:
+            ui.notify(f"{classifier_problem} - processing not started.", type="negative", multi_line=True)
+            set_status("Ready", busy=False)
+            run_button.enable()
+            return
+        file_count = await count_raw_files(project_dir)
+        if file_count is not None and num_chunks > docker_client.max_chunks_for_files(file_count):
+            ui.notify(
+                f"This project has {file_count} raw images, and PyOPIA needs at least two per processor, so at "
+                f"most {docker_client.max_chunks_for_files(file_count)} processors can be used - "
+                "processing not started.",
+                type="negative",
+            )
+            set_status("Ready", busy=False)
+            run_button.enable()
+            return
         if num_chunks > 1 and await nicegui_run.io_bound(docker_client.output_uses_append, project_dir):
             # PyOPIA's own check_chunks() rejects num_chunks > 1 against append=true outright -
             # caught here, before the output folder below is cleared, so a misconfigured run
@@ -2084,6 +2180,7 @@ def index() -> None:
                     strategy=strategy,
                     progress_file=progress_file,
                     container_name=container_name,
+                    limits=limits,
                 )
             )
         finally:
@@ -2102,7 +2199,15 @@ def index() -> None:
             run_button.enable()
             return
         if exit_code != 0:
-            report_failure(lines, "Processing failed", image)
+            report_failure(lines, "Processing failed", image, during_processing=True)
+            run_button.enable()
+            return
+        # With more than one processor PyOPIA exits normally even when every worker crashed at
+        # start-up (the traceback is in the log), so "finished" is only believed if results exist.
+        if not any(output_dir.glob("*STATS.nc")):
+            report_failure(
+                lines, "Processing wrote no results - PyOPIA's workers failed", image, during_processing=True
+            )
             run_button.enable()
             return
         ui.notify("Processing complete", type="positive")

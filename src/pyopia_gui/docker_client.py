@@ -361,6 +361,63 @@ def stop_container(name: str, grace_seconds: int = 2) -> bool:
     return result.returncode == 0
 
 
+@dataclass(frozen=True)
+class DockerLimits:
+    """The CPUs and memory (in bytes) Docker itself reports it has - on Docker Desktop that's
+    the virtual machine's allocation, not the whole computer's."""
+
+    cpus: int
+    memory_bytes: int
+
+
+def docker_limits() -> DockerLimits | None:
+    """What Docker reports for its CPUs and memory, or None if it can't be read."""
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.NCPU}} {{.MemTotal}}"],
+            capture_output=True,
+            timeout=15,
+            text=True,
+            **_no_console_kwargs(),
+        )
+        cpus, memory_bytes = result.stdout.split()
+        limits = DockerLimits(int(cpus), int(memory_bytes))
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+    return limits if result.returncode == 0 and limits.cpus > 0 and limits.memory_bytes > 0 else None
+
+
+# A processing container may use this share of Docker's CPUs and memory, so a run that
+# outgrows its allowance can't take the rest of the machine down with it.
+_LIMIT_SHARE = 0.8
+# Each processor is a separate worker process holding its own images in memory - about 5 GB
+# measured on the holographic example data, rounded up for headroom.
+_MEMORY_PER_PROCESSOR_BYTES = 6 * 1024**3
+
+
+def max_processors(limits: DockerLimits) -> int:
+    """The most processors (see `process_command`'s `num_chunks`) `limits` can run at once:
+    two CPUs are left free, and each processor needs `_MEMORY_PER_PROCESSOR_BYTES` of the
+    memory share a processing container is allowed. Never less than 1."""
+    by_memory = int(_LIMIT_SHARE * limits.memory_bytes // _MEMORY_PER_PROCESSOR_BYTES)
+    return max(1, min(limits.cpus - 2, by_memory))
+
+
+def max_chunks_for_files(file_count: int) -> int:
+    """The most processors (chunks) PyOPIA's `process` accepts for `file_count` raw files - it
+    refuses more than half the number of files. Never less than 1."""
+    return max(1, file_count // 2)
+
+
+def _limit_args(limits: DockerLimits | None) -> list[str]:
+    """`docker run` flags capping a container at `_LIMIT_SHARE` of `limits`, with no swap so
+    running out of memory ends the container rather than slowing the whole machine."""
+    if limits is None:
+        return []
+    memory = str(int(_LIMIT_SHARE * limits.memory_bytes))
+    return ["--cpus", str(max(1, int(_LIMIT_SHARE * limits.cpus))), "--memory", memory, "--memory-swap", memory]
+
+
 def process_command(
     project_dir: Path,
     config_filename: str = "config.toml",
@@ -369,6 +426,7 @@ def process_command(
     strategy: str = "block",
     progress_file: str | None = None,
     container_name: str | None = None,
+    limits: DockerLimits | None = None,
 ) -> list[str]:
     """Build the command to run PyOPIA processing against `config_filename` inside `project_dir`.
 
@@ -384,12 +442,15 @@ def process_command(
 
     `container_name` names the container (`docker run --name`) so a run can be recognised as
     still going, and stopped, from outside.
+
+    `limits` (see `docker_limits`) caps the container's CPUs and memory - see `_limit_args`.
     """
     command = [
         "docker",
         "run",
         "--rm",
         *(["--name", container_name] if container_name else []),
+        *_limit_args(limits),
         *_user_args(),
         *_volume_args(project_dir),
         *_console_args(),
@@ -725,6 +786,25 @@ def output_uses_append(project_dir: Path, config_filename: str = "config.toml") 
     except (KeyError, TypeError, OSError, tomllib.TOMLDecodeError):
         return True
     return bool(output_step.get("append", True))
+
+
+def classifier_problem(config: dict) -> str | None:
+    """A plain-language explanation if an enabled classifier step has no `model_path`, else None.
+
+    `pyopia.classify.Classify` loads its model when it's constructed, so without a path every
+    processing worker fails at start-up.
+    """
+    steps = config.get("steps")
+    if not isinstance(steps, dict):
+        return None
+    for name, step in steps.items():
+        if isinstance(step, dict) and step.get("pipeline_class") == "pyopia.classify.Classify":
+            if not step.get("model_path"):
+                return (
+                    f"The {name} step has no model_path. Set it on the Configuration tab, or switch the "
+                    "step off there if you don't want particles classified."
+                )
+    return None
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -1479,11 +1559,16 @@ _STALL_MARKERS = ("no output received for",)
 _ECOTAXA_NO_CLASSIFIER_MARKERS = ("create_bundle", "zero-size array to reduction operation minimum")
 
 
-def interpret_failure(output_lines: list[str], image: str = PYOPIA_IMAGE) -> str | None:
+def interpret_failure(
+    output_lines: list[str], image: str = PYOPIA_IMAGE, *, during_processing: bool = False
+) -> str | None:
     """Give a plain-language explanation for a recognised Docker failure in `output_lines`.
 
     `image` should be whichever image the failing command actually used, so a pull
     failure names the real culprit rather than always naming the default image.
+
+    `during_processing` is for the processing run itself, where going quiet means a worker
+    has most likely run out of memory rather than that a download has stalled.
 
     Returns None if nothing recognisable was found, so the caller can fall back to a
     generic "see the log" message.
@@ -1497,6 +1582,11 @@ def interpret_failure(output_lines: list[str], image: str = PYOPIA_IMAGE) -> str
         )
     if any(marker in combined for marker in _DAEMON_UNREACHABLE_MARKERS):
         return "Lost contact with Docker partway through - check it's still running, then try again."
+    if during_processing and any(marker in combined for marker in _STALL_MARKERS):
+        return (
+            "Processing went quiet for a long time - a worker has probably run out of memory. "
+            "Try again with fewer processors."
+        )
     if any(marker in combined for marker in _STALL_MARKERS):
         return (
             "This stalled with no progress for a while - usually a network problem (a stuck "

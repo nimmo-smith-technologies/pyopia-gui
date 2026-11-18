@@ -62,6 +62,7 @@ def _no_real_docker_introspection(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
     monkeypatch.setattr(docker_client, "list_available_versions", lambda *a, **k: [])
+    monkeypatch.setattr(docker_client, "docker_limits", lambda: None)
 
     def no_real_summary(*a: object, **k: object) -> None:
         raise docker_client.StatsSummaryError("no real PyOPIA container in tests")
@@ -665,6 +666,12 @@ async def test_run_shows_friendly_message_in_log_on_image_pull_failure(
     await user.should_see("Couldn't pull the PyOPIA image")
 
 
+def _write_per_image_stats(project_dir: Path) -> None:
+    """What a real `process` step leaves behind with `append = false`: a stats file per image."""
+    (project_dir / "processed").mkdir(exist_ok=True)
+    (project_dir / "processed" / "demo-Image-D20990101T000000-STATS.nc").write_bytes(b"")
+
+
 def _write_config_with_pixel_size(tmp_path: Path, output_datafile: str = "processed/demo") -> None:
     # append=false, not the default (true) - several tests here exercise the
     # process -> merge-mfdata flow, which is only actually run when append=false
@@ -687,6 +694,7 @@ async def test_run_shows_pyopia_version_after_successful_processing(
         if "process" in command:
             on_line("PYOPIA VERSION 9.16.23")
             on_line("LOAD CONFIG")
+            _write_per_image_stats(tmp_path)
         if "merge-mfdata" in command:
             # A real run's merge-mfdata step is what actually produces the stats file the
             # Results tab looks for - a dummy file is enough here since this test only
@@ -707,6 +715,126 @@ async def test_run_shows_pyopia_version_after_successful_processing(
     await user.should_see("processed with PyOPIA v9.16.23")
 
 
+async def test_run_processing_refuses_more_processors_than_docker_has_memory_for(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    monkeypatch.setattr(docker_client, "docker_limits", lambda: docker_client.DockerLimits(8, 16 * 1024**3))
+    _write_config_with_pixel_size(tmp_path)
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("up to 2 can run at once")
+    await asyncio.sleep(0.5)  # let every limit refresh finish - one clamps a value above the limit
+
+    user.find(kind=ui.number, content="Processors to use").elements.pop().value = 4
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("memory for at most 2 processors")
+
+    assert not any("process" in command for command in calls)
+
+
+async def test_processors_are_limited_to_half_the_number_of_raw_images(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    monkeypatch.setattr(docker_client, "docker_limits", lambda: docker_client.DockerLimits(32, 256 * 1024**3))
+    _write_config_with_a_step(tmp_path)
+    (tmp_path / "images").mkdir()
+    for i in range(10):
+        (tmp_path / "images" / f"{i}.silc").write_bytes(b"")
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await user.should_see("This project has 10 raw images")
+    processors_input = user.find(kind=ui.number, content="Processors to use").elements.pop()
+    assert processors_input.max == 5
+    await asyncio.sleep(0.5)  # let every limit refresh finish - one clamps a value above the limit
+
+    processors_input.value = 8  # as if typed in despite the limit
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("at most 5 processors")
+
+    assert not any("process" in command for command in calls)
+
+
+async def test_run_is_refused_when_the_classifier_has_no_model_path(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    _write_config_with_pixel_size(tmp_path)
+    with (tmp_path / "config.toml").open("a") as f:
+        f.write('\n[steps.classifier]\npipeline_class = "pyopia.classify.Classify"\nnormalize_intensity = true\n')
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await asyncio.sleep(0.3)
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("The classifier step has no model_path")
+
+    assert not any("process" in command for command in calls)
+
+
+async def test_run_that_wrote_no_results_is_reported_as_failed_not_complete(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # With several processors PyOPIA exits normally even if every worker crashed.
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda **kwargs: [])
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    _write_config_with_pixel_size(tmp_path)
+    calls: list[list[str]] = []
+
+    async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        calls.append(command)
+        if "process" in command:
+            on_line("TypeError: expected str, bytes or os.PathLike object, not NoneType")
+        return 0
+
+    monkeypatch.setattr(docker_client, "run_streamed", fake_run_streamed)
+
+    await user.open("/")
+    user.find(ui.input).elements.pop().value = str(tmp_path)
+    await asyncio.sleep(0.3)
+    user.find(kind=ui.button, content="Run processing").click()
+    await _click_through_pinned_version_dialog_if_shown(user)
+    await user.should_see("wrote no results")
+
+    assert not any("merge-mfdata" in command for command in calls)
+
+
 async def test_rerun_clears_stale_results_from_previous_run(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -721,6 +849,7 @@ async def test_rerun_clears_stale_results_from_previous_run(
             run_count["n"] += 1
             if run_count["n"] == 1:
                 on_line("PYOPIA VERSION 9.16.23")
+                _write_per_image_stats(tmp_path)
                 return 0
             return 1  # the second run's process step fails outright
         if "merge-mfdata" in command:
@@ -864,6 +993,8 @@ async def test_successful_rerun_removes_stale_montage(
     (tmp_path / "montage-scaled.json").write_text('{"skipped": 4, "total": 20}')
 
     async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        if "process" in command:
+            _write_per_image_stats(tmp_path)
         if "merge-mfdata" in command:
             (tmp_path / "processed").mkdir(exist_ok=True)
             (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
@@ -902,6 +1033,7 @@ async def _start_run_that_waits(
         commands.append(command)
         if "process" in command:
             await release_run.wait()
+            _write_per_image_stats(tmp_path)
         else:
             (tmp_path / "processed").mkdir(exist_ok=True)
             (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
@@ -1045,6 +1177,8 @@ async def test_run_processing_clears_stale_output_folder_before_running(
     stale_file.write_bytes(b"stale, from an earlier run/config")
 
     async def fake_run_streamed(command: list[str], on_line: Callable[[str], None]) -> int:
+        if "process" in command:
+            _write_per_image_stats(tmp_path)
         if "merge-mfdata" in command:
             (tmp_path / "processed").mkdir(exist_ok=True)
             (tmp_path / "processed" / "demo-STATS.nc").write_bytes(b"")
