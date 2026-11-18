@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Nimmo Smith Technologies Limited
 
 import asyncio
+import codecs
 import csv
 import importlib  # noqa: F401 used by resolve_pipeline_class, exec()-ed from a string below - see its comment
 import itertools
@@ -16,7 +17,7 @@ import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.error import URLError
 
 import tomli_w
@@ -576,8 +577,24 @@ def export_to_ecotaxa_command(
 
 
 def _load_config(project_dir: Path, config_filename: str) -> dict:
-    with (project_dir / config_filename).open("rb") as f:
-        return tomllib.load(f)
+    """Parse the project's config file. A file PyOPIA itself couldn't read (a byte-order mark,
+    or an encoding other than UTF-8) raises `tomllib.TOMLDecodeError` with an explanation, like
+    any other unreadable config, so every caller's existing handling covers it.
+    """
+    raw = (project_dir / config_filename).read_bytes()
+    if raw.startswith(codecs.BOM_UTF8):
+        raise tomllib.TOMLDecodeError(
+            "the file starts with a byte-order mark (some Windows editors add one), which PyOPIA can't read - "
+            "re-save it as UTF-8 without BOM"
+        )
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise tomllib.TOMLDecodeError(
+            "the file isn't saved as UTF-8 (an accented character from a Windows editor is the usual cause) - "
+            "re-save it as UTF-8"
+        ) from None
+    return tomllib.loads(text)
 
 
 def load_config(project_dir: Path, config_filename: str = "config.toml") -> dict:
@@ -1106,6 +1123,28 @@ THUMBNAIL_DIR_NAME = ".pyopia_gui_thumbnails"
 _BROWSER_VIEWABLE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
 
 
+def raw_files_problem(project_dir: Path, raw_files_pattern: str) -> str | None:
+    """A plain-language explanation if `raw_files_pattern` points outside `project_dir`, else None.
+
+    PyOPIA runs in Docker, which only sees the project folder (see `_volume_args`), so
+    an absolute or `..` pattern can't work there - and `list_raw_files` can't expand an
+    absolute glob at all.
+    """
+    parts = raw_files_pattern.replace("\\", "/").split("/")
+    absolute = (
+        PurePosixPath(raw_files_pattern).is_absolute()
+        or PureWindowsPath(raw_files_pattern).is_absolute()
+        or raw_files_pattern.startswith("~")
+    )
+    if not absolute and ".." not in parts:
+        return None
+    return (
+        f"general.raw_files is '{raw_files_pattern}', which is outside the project folder. PyOPIA runs in "
+        f"Docker, which can only see {project_dir} - put (or link) the raw images inside it and use a "
+        "path relative to it, such as 'raw/*.silc'."
+    )
+
+
 def list_raw_files(project_dir: Path, raw_files_pattern: str) -> list[Path]:
     """The project's raw files matching `raw_files_pattern` (config.toml's own
     `general.raw_files`), sorted - the same listing the Raw data explorer's thumbnail
@@ -1117,7 +1156,11 @@ def list_raw_files(project_dir: Path, raw_files_pattern: str) -> list[Path]:
     `FilesToProcess` reads it the same way (one path per line, order preserved as
     written, not re-sorted) - see `apply_raw_files_subset` below, which is the only
     thing that writes one.
+
+    A pattern outside the project folder (see `raw_files_problem`) lists nothing.
     """
+    if raw_files_problem(project_dir, raw_files_pattern):
+        return []
     if raw_files_pattern.endswith(".txt"):
         list_path = project_dir / raw_files_pattern
         if not list_path.is_file():

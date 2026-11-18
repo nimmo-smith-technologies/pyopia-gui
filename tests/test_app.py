@@ -1657,6 +1657,78 @@ def _write_config_with_a_step(tmp_path: Path) -> None:
     )
 
 
+async def test_project_tab_says_why_the_other_tabs_are_unavailable(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    tmp_path.joinpath("config.toml").write_bytes(b"\xef\xbb\xbf[general]\npixel_size = 24\n")
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("The other tabs are unavailable")
+    await user.should_see("byte-order mark")
+
+
+async def test_config_tab_keeps_a_log_level_it_does_not_list(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+    _write_config_with_a_step(tmp_path)
+    tmp_path.joinpath("config.toml").write_text(
+        tmp_path.joinpath("config.toml").read_text().replace("[general]\n", '[general]\nlog_level = "WARN"\n')
+    )
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("Verify this matches your actual instrument")
+    log_level_select = user.find(kind=ui.select, content="log_level").elements.pop()
+    assert log_level_select.value == "WARN"
+
+
+async def test_saving_with_a_blank_pixel_size_says_what_is_missing(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+    _write_config_with_a_step(tmp_path)
+    tmp_path.joinpath("config.toml").write_text(
+        tmp_path.joinpath("config.toml").read_text().replace("pixel_size = 24\n", "")
+    )
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("Verify this matches your actual instrument")
+    user.find(kind=ui.button, content="Save changes").click()
+    await user.should_see("pixel_size is blank")
+    assert "pixel_size" not in tomllib.loads(tmp_path.joinpath("config.toml").read_text())["general"]
+
+
+async def test_explorer_explains_a_raw_files_path_outside_the_project(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+    _write_config_with_a_step(tmp_path)
+    tmp_path.joinpath("config.toml").write_text(
+        tmp_path.joinpath("config.toml").read_text().replace("images/*.silc", "/data/silcam/*.silc")
+    )
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+    await asyncio.sleep(0.2)
+    user.find(kind=ui.tab, content="2. Raw data explorer").click()
+
+    await user.should_see("outside the project folder")
+
+
 async def test_config_tab_shows_general_fields_for_a_valid_project(
     user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -93,6 +93,20 @@ pyopia-gui; once they're there, the **Configuration** tab (below) can generate
 PyOPIA's own default `config.toml` for you rather than needing PyOPIA's command-line
 tools.
 
+Some things to check if your own folder doesn't open or work as expected:
+
+- The config file has to be called `config.toml` and contain a `steps.output`
+  section with an `output_datafile`. If the folder can't be used, the **Project**
+  tab says why, under the folder field, and the other tabs stay greyed out.
+- The file must be saved as plain UTF-8, without a byte-order mark - some Windows
+  editors add one, and PyOPIA itself can't read such a file either.
+- Docker only sees the project folder, so `general.raw_files` (and any other path in
+  the config) has to point at files *inside* it, as a path relative to the folder -
+  not an absolute path, and not one starting with `..`. Copy or link your images
+  into the project folder if they live elsewhere.
+- `pixel_size` has to be filled in on the **Configuration** tab before a config can
+  be saved or previewed.
+
 ## Browsing raw data
 
 The **Raw data explorer** tab shows a paginated grid of thumbnails for whatever raw

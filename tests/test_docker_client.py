@@ -826,6 +826,24 @@ def test_validate_project_missing_output_datafile_key(tmp_path: Path) -> None:
     assert "output_datafile" in error
 
 
+def test_validate_project_explains_a_byte_order_mark(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_bytes(b"\xef\xbb\xbf[general]\npixel_size = 24\n")
+
+    error = docker_client.validate_project(tmp_path)
+
+    assert error is not None
+    assert "byte-order mark" in error
+
+
+def test_validate_project_explains_a_file_that_is_not_utf8(tmp_path: Path) -> None:
+    (tmp_path / "config.toml").write_bytes("[general]\n# caf\xe9\n".encode("latin-1"))
+
+    error = docker_client.validate_project(tmp_path)
+
+    assert error is not None
+    assert "UTF-8" in error
+
+
 def test_validate_project_valid_config(tmp_path: Path) -> None:
     _write_config(tmp_path)
 
@@ -1027,6 +1045,19 @@ def test_list_raw_files_reads_an_explicit_txt_filelist_in_written_order(tmp_path
     result = docker_client.list_raw_files(tmp_path, "raw_files_subset.txt")
 
     assert result == [tmp_path / "images" / "b.silc", tmp_path / "images" / "a.silc"]
+
+
+@pytest.mark.parametrize(
+    "pattern", ["/data/silcam/*.silc", "C:\\data\\*.silc", "~/data/*.silc", "../raw/*.silc", "a/../../raw/*"]
+)
+def test_raw_files_outside_the_project_are_reported_and_not_listed(tmp_path: Path, pattern: str) -> None:
+    assert "outside the project folder" in docker_client.raw_files_problem(tmp_path, pattern)
+    assert docker_client.list_raw_files(tmp_path, pattern) == []
+
+
+@pytest.mark.parametrize("pattern", ["images/*.silc", "raw_files_subset.txt", "data/2026..08/*.silc"])
+def test_raw_files_inside_the_project_are_not_a_problem(tmp_path: Path, pattern: str) -> None:
+    assert docker_client.raw_files_problem(tmp_path, pattern) is None
 
 
 def test_list_raw_files_returns_empty_for_a_missing_txt_filelist(tmp_path: Path) -> None:

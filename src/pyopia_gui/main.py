@@ -49,7 +49,7 @@ _STATS_READ_ERRORS = (KeyError, ValueError, OSError, tomllib.TOMLDecodeError, Ty
 # The `[general]` config keys the Configuration tab hand-labels itself, rather than
 # introspecting - they're not tied to any pipeline_class (see docker_client's
 # introspect_config_steps), so there's no class docstring to pull a description from.
-_GENERAL_LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
+_GENERAL_LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 # The Configuration tab only offers an enable/disable switch for "classifier".
 # PyOPIA's Pipeline.__init__ default `initial_steps=['initial', 'classifier',
@@ -558,6 +558,8 @@ def index() -> None:
                 "Determines where the example project below gets created, and what folder processing "
                 "runs against - point it at your own data any time."
             ).classes("text-sm text-gray-500")
+            project_problem_label = ui.label().classes("text-sm text-orange-600 break-all")
+            project_problem_label.set_visibility(False)
             create_button = ui.button("Create example project")
             create_button.tooltip(
                 "Downloads a small example dataset and sets up a ready-to-run PyOPIA project in the folder above"
@@ -1181,9 +1183,11 @@ def index() -> None:
                 "physical instrument (holo setups especially have many sub-variants) and isn't "
                 "something pyopia-gui can check for you."
             ).classes("text-xs text-orange-600 -mt-3")
-            log_level_select = track(
-                ui.select(_GENERAL_LOG_LEVELS, value=general.get("log_level", "INFO"), label="log_level")
-            )
+            log_level = general.get("log_level", "INFO")
+            # PyOPIA accepts any `logging` level name (WARN, FATAL, NOTSET, ...), so a value
+            # the list doesn't offer is shown as it is rather than refused.
+            log_levels = _GENERAL_LOG_LEVELS if log_level in _GENERAL_LOG_LEVELS else [*_GENERAL_LOG_LEVELS, log_level]
+            log_level_select = track(ui.select(log_levels, value=log_level, label="log_level"))
             log_level_select.classes("w-full")
             log_file_input = track(ui.input("log_file", value=general.get("log_file") or "").classes("w-full"))
             log_file_input.tooltip("Leave blank to log to the console instead of a file")
@@ -1296,6 +1300,13 @@ def index() -> None:
                 live, possibly-unsaved parameter values without a second, duplicate
                 parameter-editing UI.
                 """
+                if pixel_size_input.value is None:
+                    ui.notify(
+                        "pixel_size is blank - PyOPIA needs the size of one image pixel in µm. "
+                        "Enter it on the Configuration tab.",
+                        type="negative",
+                    )
+                    return None
                 updated: dict = {
                     "general": {
                         "raw_files": raw_files_input.value,
@@ -1454,6 +1465,10 @@ def index() -> None:
                 )
                 return
 
+            outside_problem = docker_client.raw_files_problem(project_dir, raw_files_pattern)
+            if outside_problem:
+                ui.label(outside_problem).classes("text-sm text-orange-600")
+                return
             raw_paths = docker_client.list_raw_files(project_dir, raw_files_pattern)
             if not raw_paths:
                 ui.label(f"No raw files found matching '{raw_files_pattern}'.").classes("text-sm text-gray-500")
@@ -1832,7 +1847,10 @@ def index() -> None:
         """
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         process_project_label.set_text(f"Project: {project_dir}")
-        is_valid = docker_client.validate_project(project_dir) is None
+        problem = docker_client.validate_project(project_dir)
+        is_valid = problem is None
+        project_problem_label.set_text(f"The other tabs are unavailable: {problem}" if problem else "")
+        project_problem_label.set_visibility(not is_valid)
         process_tab.set_enabled(is_valid)
         config_tab.set_enabled(is_valid)
         explorer_tab.set_enabled(is_valid)
@@ -1927,6 +1945,13 @@ def index() -> None:
     async def on_run() -> None:
         project_dir = Path(folder_input.value.strip()).expanduser().resolve()
         error = docker_client.validate_project(project_dir)
+        if not error:
+            try:
+                raw_files_pattern = (docker_client.load_config(project_dir).get("general") or {}).get("raw_files")
+            except (OSError, tomllib.TOMLDecodeError):
+                raw_files_pattern = None
+            if isinstance(raw_files_pattern, str):
+                error = docker_client.raw_files_problem(project_dir, raw_files_pattern)
         if error:
             ui.notify(error, type="negative")
             return
