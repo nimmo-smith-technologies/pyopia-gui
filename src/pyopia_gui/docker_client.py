@@ -731,6 +731,29 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.lstrip("vV").split("."))
 
 
+# Read the Docs only builds `latest` and `stable` (the newest release), not one per version.
+PYOPIA_DOCS_URL = "https://pyopia.readthedocs.io/en/stable"
+
+
+def docs_url(pipeline_class: str) -> str | None:
+    """The documentation page for a PyOPIA pipeline class, or None for a class that isn't
+    part of PyOPIA (e.g. one a user wrote themselves), which has no page there."""
+    if not pipeline_class.startswith("pyopia."):
+        return None
+    return f"{PYOPIA_DOCS_URL}/api.html#{pipeline_class}"
+
+
+def docs_version_note(pinned: str | None, newest: str | None) -> str | None:
+    """A warning that the documentation (see `docs_url`) describes the newest release when a
+    project is pinned to an older one, or None if they match or either isn't known."""
+    if not pinned or not newest or _version_tuple(pinned) >= _version_tuple(newest):
+        return None
+    return (
+        f"The documentation describes the latest PyOPIA release (v{newest}); this project uses "
+        f"v{pinned}, so some options may differ."
+    )
+
+
 def nearest_available_version(pinned: str, available: list[str]) -> str:
     """The smallest of `available` that's at least `pinned`, or the newest if none qualify.
 

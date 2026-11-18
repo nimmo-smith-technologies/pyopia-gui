@@ -1219,7 +1219,12 @@ def index() -> None:
             all_steps_by_name = {**steps, **disabled_steps}
 
             async def load_steps() -> None:
-                schema = await nicegui_run.io_bound(docker_client.introspect_config_steps, project_dir)
+                schema, pinned, available = await asyncio.gather(
+                    nicegui_run.io_bound(docker_client.introspect_config_steps, project_dir),
+                    nicegui_run.io_bound(docker_client.read_pinned_version, project_dir),
+                    nicegui_run.io_bound(docker_client.list_available_versions),
+                )
+                docs_note = docker_client.docs_version_note(pinned, available[0] if available else None)
                 steps_spinner.visible = False
                 active_schema = schema.get("steps", {}) if schema else {}
                 disabled_schema = schema.get("steps_disabled", {}) if schema else {}
@@ -1237,6 +1242,8 @@ def index() -> None:
                     with expansion:
                         if info.get("summary"):
                             ui.label(info["summary"]).classes("text-sm text-gray-600")
+                        if docs_url := docker_client.docs_url(step["pipeline_class"]):
+                            ui.link("Documentation", docs_url, new_tab=True).classes("text-sm")
                         fields = step_inputs.setdefault(step_name, {})
                         if "fields" in info:
                             if not info["fields"]:
@@ -1271,6 +1278,8 @@ def index() -> None:
                                 fields[name] = (track(ui.input(name, value=shown).classes("w-full")), "raw")
 
                 with steps_column:
+                    if docs_note:
+                        ui.label(docs_note).classes("text-sm text-orange-700")
                     for step_name, step in steps.items():
                         if not isinstance(step, dict) or "pipeline_class" not in step:
                             continue

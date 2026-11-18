@@ -141,7 +141,10 @@ settings and one section per processing step:
   descriptions PyOPIA's own documentation gives them - read directly from the exact
   PyOPIA version this project uses, so they're always accurate for it. If a step's
   parameters can't be read this way for some reason, its raw values are still shown
-  and editable, just without descriptions. Each step has an **Enable this step**
+  and editable, just without descriptions. Each PyOPIA step also has a
+  **Documentation** link to its page in PyOPIA's online documentation, which
+  describes the latest release - if the project uses an older version, a note above
+  the steps says so. Each step has an **Enable this step**
   switch above it - switching a step off keeps its settings (nothing is deleted,
   just moved aside) but leaves it out of both processing and Preview until it's
   switched back on; a disabled step shows dimmed with "(disabled)" in its caption.

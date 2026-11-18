@@ -61,6 +61,7 @@ def _no_real_docker_introspection(monkeypatch: pytest.MonkeyPatch) -> None:
     that do care override this explicitly with their own monkeypatch.setattr(...) call.
     """
     monkeypatch.setattr(docker_client, "introspect_config_steps", lambda *a, **k: {})
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda *a, **k: [])
 
     def no_real_summary(*a: object, **k: object) -> None:
         raise docker_client.StatsSummaryError("no real PyOPIA container in tests")
@@ -326,6 +327,29 @@ async def test_saving_configuration_on_an_already_processed_project_stays_on_con
     await user.should_see("Configuration saved")
 
     assert results_tab.tabs.value == "config"  # saving must not jump tabs
+
+
+async def test_configuration_links_each_pyopia_step_to_its_docs_and_flags_an_older_project(
+    user: User, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(docker_client, "check_docker", lambda: docker_client.DockerStatus.AVAILABLE)
+    monkeypatch.setattr(docker_client, "read_pinned_version", lambda *a, **k: "9.16.23")
+    monkeypatch.setattr(docker_client, "list_available_versions", lambda *a, **k: ["9.17.0", "9.16.23"])
+    monkeypatch.setattr(
+        docker_client,
+        "introspect_config_steps",
+        lambda *a, **k: {"steps": {"segmentation": {"pipeline_class": "pyopia.process.Segment", "fields": []}}},
+    )
+    _write_config_with_a_step(tmp_path)
+
+    await user.open("/")
+    folder_input = user.find(ui.input).elements.pop()
+    folder_input.value = str(tmp_path)
+
+    await user.should_see("Documentation")
+    link = user.find(kind=ui.link, content="Documentation").elements.pop()
+    assert link.props["href"] == "https://pyopia.readthedocs.io/en/stable/api.html#pyopia.process.Segment"
+    await user.should_see("describes the latest PyOPIA release (v9.17.0)")
 
 
 async def test_editing_configuration_shows_unsaved_changes_warning_on_process_tab(
