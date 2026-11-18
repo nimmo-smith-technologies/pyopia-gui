@@ -33,8 +33,8 @@ system:
   error, install `libxcb-cursor0` (e.g. `sudo apt install libxcb-cursor0` on
   Debian/Ubuntu-based distros).
 
-!!! note "This is still an early alpha"
-    The downloadable app is new and less tested than running from source - if you hit
+!!! note "The downloadable app is the newer way to run it"
+    The downloadable app is newer and less tested than running from source - if you hit
     something unexpected, [Option B](#option-b-run-from-source) is the more
     battle-tested path, and we'd appreciate a
     [bug report](https://github.com/nimmo-smith-technologies/pyopia-gui/issues) either
