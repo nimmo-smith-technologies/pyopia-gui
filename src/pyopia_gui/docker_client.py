@@ -71,6 +71,19 @@ def supports_recent_cli(version: str | None) -> bool:
     return version is None or _version_tuple(version) >= _version_tuple(MIN_RECENT_CLI_VERSION)
 
 
+# PyOPIA 2.19.0 replaced the `make-montage-scaled` command with `make-montage --scaled`.
+MIN_SCALED_FLAG_VERSION = "2.19.0"
+
+
+def supports_scaled_flag(version: str | None) -> bool:
+    """Whether a PyOPIA `version` builds a scaled montage with `make-montage --scaled`
+    (MIN_SCALED_FLAG_VERSION and newer) rather than the separate `make-montage-scaled` command.
+
+    As with `supports_recent_cli`, an unknown version is assumed to be current.
+    """
+    return version is None or _version_tuple(version) >= _version_tuple(MIN_SCALED_FLAG_VERSION)
+
+
 class DockerStatus(Enum):
     NOT_INSTALLED = "not_installed"
     NOT_RUNNING = "not_running"
@@ -514,9 +527,16 @@ def make_montage_scaled_command(
     Needs PyOPIA 2.18.0+ (see `supports_recent_cli`). Unlike `make_montage_command`, every
     particle is attempted, and `rel_scale` (0-1) is the fraction of the full canvas the
     particles are packed into - set it proportional to relative sample size when comparing
-    several montages, so packed density stays a fair comparison. PyOPIA's command has no
-    aux-data filter option, so there's no `filter_variable` equivalent here.
+    several montages, so packed density stays a fair comparison. PyOPIA's 2.18.x command has
+    no aux-data filter option, so there's no `filter_variable` equivalent here.
+
+    The command depends on the PyOPIA version `image` pins - see `supports_scaled_flag`.
     """
+    scaled_command = (
+        ["make-montage", stats_filename, "--scaled"]
+        if supports_scaled_flag(image_version(image))
+        else ["make-montage-scaled", stats_filename]
+    )
     return [
         "docker",
         "run",
@@ -525,8 +545,7 @@ def make_montage_scaled_command(
         *_volume_args(project_dir),
         *_console_args(),
         image,
-        "make-montage-scaled",
-        stats_filename,
+        *scaled_command,
         "--output-filename",
         output_filename,
         "--rel-scale",

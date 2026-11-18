@@ -186,12 +186,29 @@ def test_progress_text_times_the_pace_from_when_timing_began() -> None:
     assert docker_client.progress_text(3, 50, 20, already_done=1) == "Processing image 3 of 50 (6%)"
 
 
-def test_make_montage_scaled_command_passes_output_filename_and_rel_scale(tmp_path: Path) -> None:
-    command = docker_client.make_montage_scaled_command(tmp_path, "processed/demo-STATS.nc", rel_scale=0.4)
+def test_make_montage_scaled_command_uses_the_separate_command_before_2_19(tmp_path: Path) -> None:
+    command = docker_client.make_montage_scaled_command(
+        tmp_path, "processed/demo-STATS.nc", image="ghcr.io/sintef/pyopia:v2.18.0", rel_scale=0.4
+    )
 
     assert command[-6:] == [
         "make-montage-scaled",
         "processed/demo-STATS.nc",
+        "--output-filename",
+        "montage-scaled.png",
+        "--rel-scale",
+        "0.4",
+    ]
+
+
+@pytest.mark.parametrize("image", ["ghcr.io/sintef/pyopia:v2.19.0", "ghcr.io/sintef/pyopia:latest"])
+def test_make_montage_scaled_command_uses_the_scaled_flag_from_2_19(tmp_path: Path, image: str) -> None:
+    command = docker_client.make_montage_scaled_command(tmp_path, "processed/demo-STATS.nc", image=image, rel_scale=0.4)
+
+    assert command[-7:] == [
+        "make-montage",
+        "processed/demo-STATS.nc",
+        "--scaled",
         "--output-filename",
         "montage-scaled.png",
         "--rel-scale",
